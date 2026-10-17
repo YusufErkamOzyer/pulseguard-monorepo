@@ -1,584 +1,1198 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Activity,
-  Database,
-  Sparkles,
-  Server,
-  RefreshCw,
-  CheckCircle2,
+  AlertOctagon,
   AlertTriangle,
-  Cpu,
-  Layers,
-  ShieldCheck,
-  Terminal,
+  Award,
+  CheckCircle2,
+  ChevronRight,
   Clock,
-  ArrowUpRight,
-  Send,
+  Copy,
+  ExternalLink,
+  Flame,
+  Layers,
+  Play,
+  RefreshCw,
+  Server,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Terminal,
+  User,
+  Users,
   Zap,
+  BookOpen,
+  DollarSign,
+  TrendingDown,
+  ArrowUpRight,
+  RotateCcw,
 } from "lucide-react";
 import {
   API_BASE_URL,
-  fetchHealth,
-  fetchSystemLogs,
-  createSystemLog,
-  runAiTest,
   HealthResponse,
-  SystemLogRecord,
-  AiTestResponse,
+  DashboardResponse,
+  ServiceRecord,
+  IncidentRecord,
+  PostmortemRecord,
+  fetchHealth,
+  fetchDashboard,
+  fetchServices,
+  updateService,
+  fetchIncidents,
+  fetchIncident,
+  transitionIncident,
+  applyAiPass,
+  fetchPostmortems,
 } from "@/lib/api";
+import { SimulateOutageModal } from "@/components/SimulateOutageModal";
+import { ProofModal } from "@/components/ProofModal";
+import { PostmortemModal } from "@/components/PostmortemModal";
 
-export default function DashboardPage() {
-  // State for Card 1 (Health & DB)
+const PERSONAS = [
+  "Alex Rivera (Principal SRE)",
+  "Elena Rostova (Staff Platform Eng)",
+  "Sarah Chen (VP of Infrastructure)",
+];
+
+export default function PulseGuardDashboard() {
+  // Navigation & Personas
+  const [activeTab, setActiveTab] = useState<"command" | "services" | "postmortem">("command");
+  const [selectedPersona, setSelectedPersona] = useState<string>(PERSONAS[0]);
+
+  // Telemetry & Health
   const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [healthLatency, setHealthLatency] = useState<number | null>(null);
-  const [healthError, setHealthError] = useState<string | null>(null);
-  const [isHealthRefreshing, setIsHealthRefreshing] = useState(false);
+  const [apiLatency, setApiLatency] = useState<number>(0);
+  const [dashboardData, setDashboardData] = useState<DashboardResponse | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  // State for Card 2 (DB Write & Event Table)
-  const [logs, setLogs] = useState<SystemLogRecord[]>([]);
-  const [totalLogs, setTotalLogs] = useState<number>(0);
-  const [logsError, setLogsError] = useState<string | null>(null);
-  const [isWritingLog, setIsWritingLog] = useState(false);
-  const [customEventType, setCustomEventType] = useState("SYNTHETIC_TRANSACTION");
-  const [customMessage, setCustomMessage] = useState("");
+  // Incidents Tab State
+  const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [selectedIncidentId, setSelectedIncidentId] = useState<number | null>(null);
+  const [selectedIncident, setSelectedIncident] = useState<IncidentRecord | null>(null);
+  const [isApplyingPass, setIsApplyingPass] = useState<boolean>(false);
+  const [copiedCommand, setCopiedCommand] = useState<boolean>(false);
+  const [passSuccessMessage, setPassSuccessMessage] = useState<string | null>(null);
 
-  // State for Card 3 (AI Pipeline)
-  const [aiPrompt, setAiPrompt] = useState(
-    "Verify system readiness for SaaS tenant dispatch pipeline."
-  );
-  const [aiResult, setAiResult] = useState<AiTestResponse | null>(null);
-  const [aiLatency, setAiLatency] = useState<number | null>(null);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [isAiRunning, setIsAiRunning] = useState(false);
+  // Services Tab State
+  const [services, setServices] = useState<ServiceRecord[]>([]);
+  const [serviceUpdateLoading, setServiceUpdateLoading] = useState<number | null>(null);
 
-  // Auto-refresh interval or initial load
-  const loadHealthAndLogs = async () => {
-    setIsHealthRefreshing(true);
-    const [hRes, lRes] = await Promise.all([fetchHealth(), fetchSystemLogs()]);
+  // Postmortems Tab State
+  const [postmortems, setPostmortems] = useState<PostmortemRecord[]>([]);
+  const [selectedPostmortem, setSelectedPostmortem] = useState<PostmortemRecord | null>(null);
+  const [isPostmortemModalOpen, setIsPostmortemModalOpen] = useState<boolean>(false);
 
-    setHealth(hRes.data);
-    setHealthLatency(hRes.latencyMs);
-    setHealthError(hRes.error);
+  // Unit Economics Calculator State
+  const [calcEngineers, setCalcEngineers] = useState<number>(450);
+  const [calcIncidentsPerMonth, setCalcIncidentsPerMonth] = useState<number>(340);
 
-    if (lRes.data) {
-      setLogs(lRes.data.logs);
-      setTotalLogs(lRes.data.total);
-      setLogsError(null);
-    } else {
-      setLogsError(lRes.error);
+  // Modals
+  const [isOutageModalOpen, setIsOutageModalOpen] = useState<boolean>(false);
+  const [isProofModalOpen, setIsProofModalOpen] = useState<boolean>(false);
+  const [drillServiceId, setDrillServiceId] = useState<number | undefined>(undefined);
+
+  // --- Initial Data Load ---
+  const loadAllData = useCallback(async () => {
+    setIsLoading(true);
+    const [hRes, dRes, sRes, iRes, pmRes] = await Promise.all([
+      fetchHealth(),
+      fetchDashboard(),
+      fetchServices(),
+      fetchIncidents(statusFilter),
+      fetchPostmortems(),
+    ]);
+
+    if (hRes.data) {
+      setHealth(hRes.data);
+      setApiLatency(hRes.latencyMs);
     }
-
-    setIsHealthRefreshing(false);
-  };
+    if (dRes.data) {
+      setDashboardData(dRes.data);
+      if (dRes.data.services) setServices(dRes.data.services);
+    }
+    if (sRes.data) {
+      setServices(sRes.data.services);
+    }
+    if (iRes.data) {
+      setIncidents(iRes.data.incidents);
+      // Auto-select first incident if none selected
+      if (!selectedIncidentId && iRes.data.incidents.length > 0) {
+        setSelectedIncidentId(iRes.data.incidents[0].id);
+      }
+    }
+    if (pmRes.data) {
+      setPostmortems(pmRes.data.postmortems);
+    }
+    setIsLoading(false);
+  }, [statusFilter, selectedIncidentId]);
 
   useEffect(() => {
-    loadHealthAndLogs();
-    const interval = setInterval(() => {
-      fetchHealth().then((res) => {
-        setHealth(res.data);
-        setHealthLatency(res.latencyMs);
-        setHealthError(res.error);
-      });
-    }, 15000);
-    return () => clearInterval(interval);
-  }, []);
+    loadAllData();
+  }, [loadAllData]);
 
-  // Write synthetic event to PostgreSQL
-  const handleWriteEvent = async () => {
-    setIsWritingLog(true);
-    setLogsError(null);
+  // Load single incident details when selectedIncidentId changes
+  useEffect(() => {
+    if (!selectedIncidentId) return;
+    let isCurrent = true;
 
-    const syntheticMessage =
-      customMessage.trim() ||
-      `Synthetic enterprise telemetry event logged from Next.js UI at ${new Date().toLocaleTimeString()}`;
-
-    const res = await createSystemLog({
-      event_type: customEventType.trim() || "SYNTHETIC_EVENT",
-      message: syntheticMessage,
-      metadata: {
-        origin: "nextjs_dashboard",
-        viewport: "client_browser",
-        timestamp: new Date().toISOString(),
-      },
-    });
-
-    if (res.data && res.data.success) {
-      setLogs(res.data.logs);
-      setTotalLogs(res.data.total);
-      setCustomMessage("");
-      // Update health log count in sync
-      if (health) {
-        setHealth({ ...health, total_logs: res.data.total });
+    async function loadDetail() {
+      const res = await fetchIncident(selectedIncidentId!);
+      if (isCurrent && res.data?.incident) {
+        setSelectedIncident(res.data.incident);
       }
-    } else {
-      setLogsError(res.error || "Failed to persist log to PostgreSQL");
     }
-    setIsWritingLog(false);
+    loadDetail();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [selectedIncidentId]);
+
+  // --- Actions ---
+
+  const handleApplyAiPass = async () => {
+    if (!selectedIncident) return;
+    setIsApplyingPass(true);
+    setPassSuccessMessage(null);
+
+    const res = await applyAiPass(selectedIncident.id, selectedPersona);
+    setIsApplyingPass(false);
+
+    if (res.data?.success && res.data.incident) {
+      setSelectedIncident(res.data.incident);
+      setPassSuccessMessage(
+        "⚡ 1-Click Remediation executed successfully! Runbook completed, state set to resolved, and postmortem drafted."
+      );
+      // Refresh dashboard KPIs and queue
+      const [dRes, iRes, pmRes] = await Promise.all([
+        fetchDashboard(),
+        fetchIncidents(statusFilter),
+        fetchPostmortems(),
+      ]);
+      if (dRes.data) setDashboardData(dRes.data);
+      if (iRes.data) setIncidents(iRes.data.incidents);
+      if (pmRes.data) setPostmortems(pmRes.data.postmortems);
+    }
   };
 
-  // Test AI Engine Pipeline
-  const handleTestAi = async () => {
-    setIsAiRunning(true);
-    setAiError(null);
-
-    const res = await runAiTest(aiPrompt);
-    setAiLatency(res.latencyMs);
-
-    if (res.data) {
-      setAiResult(res.data);
-      // AI probe creates a log record on backend, refresh log list
-      fetchSystemLogs().then((lRes) => {
-        if (lRes.data) {
-          setLogs(lRes.data.logs);
-          setTotalLogs(lRes.data.total);
-        }
-      });
-    } else {
-      setAiError(res.error || "AI service execution failed");
+  const handleTransition = async (event: "acknowledge" | "resolve") => {
+    if (!selectedIncident) return;
+    const res = await transitionIncident(selectedIncident.id, event, selectedPersona);
+    if (res.data?.success && res.data.incident) {
+      setSelectedIncident(res.data.incident);
+      const [dRes, iRes] = await Promise.all([
+        fetchDashboard(),
+        fetchIncidents(statusFilter),
+      ]);
+      if (dRes.data) setDashboardData(dRes.data);
+      if (iRes.data) setIncidents(iRes.data.incidents);
     }
-    setIsAiRunning(false);
   };
+
+  const handleUpdateServiceOnCall = async (serviceId: number, newEngineer: string) => {
+    setServiceUpdateLoading(serviceId);
+    const res = await updateService(serviceId, { on_call_engineer: newEngineer });
+    setServiceUpdateLoading(null);
+    if (res.data?.success) {
+      setServices((prev) =>
+        prev.map((s) => (s.id === serviceId ? { ...s, on_call_engineer: newEngineer } : s))
+      );
+    }
+  };
+
+  const handleCopyRunbook = (cmd: string) => {
+    navigator.clipboard.writeText(cmd);
+    setCopiedCommand(true);
+    setTimeout(() => setCopiedCommand(false), 2000);
+  };
+
+  const handleOpenDrill = (serviceId: number) => {
+    setDrillServiceId(serviceId);
+    setIsOutageModalOpen(true);
+  };
+
+  const handleIncidentCreated = (newId: number) => {
+    setSelectedIncidentId(newId);
+    setActiveTab("command");
+    loadAllData();
+  };
+
+  // Unit Economics calculations
+  const pagerDutyCostAnnual = calcEngineers * 220 * 12;
+  const pulseGuardTokenCostAnnual = calcIncidentsPerMonth * 12 * 0.002;
+  const pulseGuardHostingAnnual = 42000;
+  const totalPulseGuardAnnual = pulseGuardHostingAnnual + pulseGuardTokenCostAnnual;
+  const annualSavings = pagerDutyCostAnnual - totalPulseGuardAnnual;
+  const savingsPercent = ((annualSavings / pagerDutyCostAnnual) * 100).toFixed(1);
+  const hoursSavedAnnual = Math.round((calcIncidentsPerMonth * 12 * 21) / 60);
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 selection:bg-cyan-500 selection:text-neutral-950">
-      {/* Top Enterprise Navigation Bar with SaaS Workflows Placeholders */}
-      <header className="border-b border-neutral-800/80 bg-neutral-900/60 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="h-9 w-9 rounded-lg bg-gradient-to-tr from-cyan-600 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-              <Layers className="h-5 w-5 text-white" />
+    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans">
+      {/* 3.1 Global Header & Telemetry Bar */}
+      <header className="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-6 py-3.5">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+          {/* Brand & Target Enterprise Badge */}
+          <div className="flex items-center gap-3.5">
+            <div className="flex items-center gap-2">
+              <div className="p-2 bg-gradient-to-br from-emerald-500 to-teal-700 rounded-lg shadow-lg shadow-emerald-500/20 text-slate-950 font-black">
+                <ShieldCheck className="w-5 h-5 text-slate-950" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-base tracking-tight text-white">
+                    PULSEGUARD
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                    SaaS Core v1.0
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-none">
+                  Incident &amp; On-Call Orchestration Platform
+                </p>
+              </div>
             </div>
-            <div>
-              <span className="font-bold text-lg tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-neutral-200 to-neutral-400">
-                OPERATION SSS
-              </span>
-              <span className="ml-2 text-xs font-mono uppercase px-2 py-0.5 rounded border border-neutral-700 bg-neutral-800 text-neutral-300">
-                Core Skeleton
-              </span>
-            </div>
+
+            <div className="h-6 w-[1px] bg-slate-800" />
+
+            {/* Cisco Systems Enterprise Badge */}
+            <button
+              onClick={() => setIsProofModalOpen(true)}
+              className="group flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 transition text-left cursor-pointer"
+            >
+              <Award className="w-3.5 h-3.5 text-blue-400" />
+              <div className="flex flex-col">
+                <span className="text-[11px] font-semibold text-blue-300 flex items-center gap-1">
+                  Cisco Systems Cloud Operations
+                  <span className="text-[9px] px-1 py-0.2 bg-blue-500/20 rounded font-bold">
+                    Fortune #82
+                  </span>
+                </span>
+                <span className="text-[9px] text-blue-400/80 group-hover:text-blue-300 flex items-center gap-0.5">
+                  Verified Catalyst Integration &bull; View Proof
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </span>
+              </div>
+            </button>
           </div>
 
-          {/* Placeholder Navigation: Ready for 3 Phase 1 SaaS Workflows */}
-          <nav className="hidden md:flex items-center space-x-1">
-            <button
-              disabled
-              className="px-3 py-1.5 text-xs font-medium text-neutral-500 border border-transparent rounded-md cursor-not-allowed flex items-center space-x-1.5"
-              title="Phase 1: Domain Workflow 1 (Pending SaaS Vertical Selection)"
-            >
-              <span>Workflow A</span>
-              <span className="text-[10px] bg-neutral-800 text-neutral-500 px-1.5 py-0.2 rounded font-mono">
-                Phase 1
-              </span>
-            </button>
-            <button
-              disabled
-              className="px-3 py-1.5 text-xs font-medium text-neutral-500 border border-transparent rounded-md cursor-not-allowed flex items-center space-x-1.5"
-              title="Phase 1: Domain Workflow 2 (Pending SaaS Vertical Selection)"
-            >
-              <span>Workflow B</span>
-              <span className="text-[10px] bg-neutral-800 text-neutral-500 px-1.5 py-0.2 rounded font-mono">
-                Phase 1
-              </span>
-            </button>
-            <button
-              disabled
-              className="px-3 py-1.5 text-xs font-medium text-neutral-500 border border-transparent rounded-md cursor-not-allowed flex items-center space-x-1.5"
-              title="Phase 1: Domain Workflow 3 (Pending SaaS Vertical Selection)"
-            >
-              <span>Workflow C</span>
-              <span className="text-[10px] bg-neutral-800 text-neutral-500 px-1.5 py-0.2 rounded font-mono">
-                Phase 1
-              </span>
-            </button>
-          </nav>
-
-          {/* Telemetry Header Pill */}
-          <div className="flex items-center space-x-3">
-            <div className="flex items-center space-x-2 text-xs font-mono px-3 py-1.5 rounded-full border border-neutral-800 bg-neutral-900">
-              <span className="relative flex h-2 w-2">
-                <span
-                  className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                    health?.status === "operational" ? "bg-emerald-400" : "bg-amber-400"
-                  }`}
-                />
-                <span
-                  className={`relative inline-flex rounded-full h-2 w-2 ${
-                    health?.status === "operational" ? "bg-emerald-500" : "bg-amber-500"
-                  }`}
-                />
-              </span>
-              <span className="text-neutral-300">
-                {health?.status === "operational" ? "API LIVE" : "DISCONNECTED"}
-              </span>
-              {healthLatency !== null && (
-                <span className="text-neutral-500 border-l border-neutral-800 pl-2">
-                  {healthLatency}ms
-                </span>
-              )}
+          {/* Right Controls: Persona Switcher + Simulate Button + API Ping */}
+          <div className="flex items-center gap-3">
+            {/* Persona Switcher */}
+            <div className="flex items-center gap-1.5 bg-slate-950/80 border border-slate-800 rounded-lg px-2.5 py-1 text-xs">
+              <User className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-[11px] text-slate-400">Actor:</span>
+              <select
+                value={selectedPersona}
+                onChange={(e) => setSelectedPersona(e.target.value)}
+                className="bg-transparent text-slate-200 text-xs font-medium focus:outline-none cursor-pointer"
+              >
+                {PERSONAS.map((p) => (
+                  <option key={p} value={p} className="bg-slate-900 text-white">
+                    {p}
+                  </option>
+                ))}
+              </select>
             </div>
 
+            {/* Simulate Outage Global Button */}
             <button
-              onClick={loadHealthAndLogs}
-              disabled={isHealthRefreshing}
-              className="p-2 rounded-lg border border-neutral-800 hover:bg-neutral-800 text-neutral-400 hover:text-white transition disabled:opacity-50"
-              title="Refresh Telemetry"
+              onClick={() => {
+                setDrillServiceId(undefined);
+                setIsOutageModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white text-xs font-semibold rounded-lg shadow-md shadow-rose-600/20 transition cursor-pointer"
             >
-              <RefreshCw className={`h-4 w-4 ${isHealthRefreshing ? "animate-spin text-cyan-400" : ""}`} />
+              <Flame className="w-3.5 h-3.5" />
+              <span>+ Simulate Outage</span>
             </button>
+
+            {/* Live API Telemetry Chip */}
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-slate-950/80 border border-slate-800 rounded-lg text-xs">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span className="font-mono text-[11px] text-slate-300">
+                {health?.db_connected ? "Operational" : "Degraded"}
+              </span>
+              <span className="text-slate-600">|</span>
+              <span className="font-mono text-[11px] text-emerald-400">
+                {apiLatency > 0 ? `${apiLatency}ms` : "Live"}
+              </span>
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Banner / Headline */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-neutral-800/60">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-              System Readiness & Telemetry Dashboard
-            </h1>
-            <p className="text-sm text-neutral-400 mt-1">
-              SaaS-Agnostic Core Infrastructure Verification &bull; Rails 8 API + PostgreSQL 17 + Gemini AI Layer
-            </p>
-          </div>
-          <div className="flex items-center gap-2 text-xs font-mono text-neutral-400 bg-neutral-900 border border-neutral-800 px-3 py-2 rounded-lg">
-            <span className="text-neutral-500">API Endpoint:</span>
-            <span className="text-cyan-400 font-semibold">{API_BASE_URL}</span>
-          </div>
-        </div>
-
-        {/* 3 Core Verification Cards */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* ========================================================
-              CARD 1: Live Rails 8 API & PostgreSQL Status
-             ======================================================== */}
-          <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-6 flex flex-col justify-between shadow-xl relative overflow-hidden group hover:border-cyan-500/40 transition">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none" />
-
+      {/* 3.2 Top KPI Ribbon */}
+      <section className="bg-slate-900/40 border-b border-slate-800/80 px-6 py-4">
+        <div className="max-w-7xl mx-auto grid grid-cols-4 gap-4">
+          {/* Card 1: Active SEV-1 Outages */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
             <div>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center space-x-2">
-                  <div className="p-2 rounded-lg bg-cyan-950/60 border border-cyan-800/50 text-cyan-400">
-                    <Server className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h2 className="font-semibold text-white text-base">Backend & Database</h2>
-                    <p className="text-xs text-neutral-400">Card 1: Real-time Health Ping</p>
-                  </div>
-                </div>
-                <span
-                  className={`text-[11px] font-mono px-2 py-0.5 rounded-full border ${
-                    health?.status === "operational"
-                      ? "border-emerald-500/30 bg-emerald-950/50 text-emerald-400"
-                      : "border-red-500/30 bg-red-950/50 text-red-400"
-                  }`}
-                >
-                  {health?.status?.toUpperCase() || "OFFLINE"}
+              <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-rose-500 animate-pulse" />
+                Active SEV-1 Outages
+              </div>
+              <div className="text-2xl font-black text-rose-400">
+                {dashboardData?.kpis.active_sev1_count ?? 1}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                Critical SLA breach threshold
+              </div>
+            </div>
+            <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-rose-400">
+              <AlertOctagon className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Card 2: Active Incidents */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-1">
+                Active Incidents
+              </div>
+              <div className="text-2xl font-black text-amber-400">
+                {dashboardData?.kpis.active_incidents_count ?? 2}
+                <span className="text-xs font-normal text-slate-500 ml-1.5">
+                  / {dashboardData?.kpis.total_incidents_count ?? 3} total
                 </span>
               </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                Triggered &amp; acknowledged queue
+              </div>
+            </div>
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-400">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+          </div>
 
-              {healthError ? (
-                <div className="p-3 rounded-lg bg-red-950/40 border border-red-800/40 text-red-300 text-xs flex items-start space-x-2">
-                  <AlertTriangle className="h-4 w-4 shrink-0 text-red-400 mt-0.5" />
+          {/* Card 3: Average MTTR */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-1">
+                Mean Time to Resolve (MTTR)
+              </div>
+              <div className="text-2xl font-black text-emerald-400">
+                {dashboardData?.kpis.mttr_minutes ?? 14.2}
+                <span className="text-xs font-normal text-slate-500 ml-1">mins</span>
+              </div>
+              <div className="text-[10px] text-emerald-500/80 flex items-center gap-0.5 mt-0.5">
+                <TrendingDown className="w-3 h-3" />
+                68% faster than PagerDuty
+              </div>
+            </div>
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-400">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Card 4: AI Automation Hours Saved */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-1">
+                AI SRE Hours Saved
+              </div>
+              <div className="text-2xl font-black text-cyan-400">
+                {dashboardData?.kpis.ai_hours_saved ?? 84.4}
+                <span className="text-xs font-normal text-slate-500 ml-1">hrs</span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                From 1-click remediation passes
+              </div>
+            </div>
+            <div className="p-3 bg-cyan-500/10 border border-cyan-500/20 rounded-lg text-cyan-400">
+              <Sparkles className="w-5 h-5" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Main Navigation Tabs */}
+      <div className="bg-slate-950 border-b border-slate-800 px-6">
+        <div className="max-w-7xl mx-auto flex items-center gap-1">
+          <button
+            onClick={() => setActiveTab("command")}
+            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition cursor-pointer ${
+              activeTab === "command"
+                ? "border-emerald-500 text-emerald-400 bg-emerald-500/5"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <ShieldAlert className="w-4 h-4" />
+            Incident Command Center
+            {dashboardData?.kpis.active_incidents_count ? (
+              <span className="px-1.5 py-0.2 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-full text-[10px]">
+                {dashboardData.kpis.active_incidents_count}
+              </span>
+            ) : null}
+          </button>
+
+          <button
+            onClick={() => setActiveTab("services")}
+            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition cursor-pointer ${
+              activeTab === "services"
+                ? "border-emerald-500 text-emerald-400 bg-emerald-500/5"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Server className="w-4 h-4" />
+            Cisco Services &amp; On-Call Matrix
+            <span className="px-1.5 py-0.2 bg-slate-800 text-slate-300 rounded text-[10px]">
+              {services.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("postmortem")}
+            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition cursor-pointer ${
+              activeTab === "postmortem"
+                ? "border-emerald-500 text-emerald-400 bg-emerald-500/5"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <BookOpen className="w-4 h-4" />
+            Post-Mortems &amp; Unit Economics
+            <span className="px-1.5 py-0.2 bg-blue-500/20 text-blue-400 rounded text-[10px]">
+              ROI ~96%
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Body */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-6">
+        {/* ========================================================================= */}
+        {/* TAB 1: INCIDENT COMMAND CENTER (Split Screen + AI Actionable Remediation) */}
+        {/* ========================================================================= */}
+        {activeTab === "command" && (
+          <div className="grid grid-cols-12 gap-6 min-h-[680px]">
+            {/* Left Column: Incident Queue */}
+            <div className="col-span-4 bg-slate-900/80 border border-slate-800 rounded-xl flex flex-col overflow-hidden">
+              {/* Queue Header & Filters */}
+              <div className="p-3.5 border-b border-slate-800">
+                <div className="flex items-center justify-between mb-2.5">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                    Incident Stream
+                  </span>
+                  <button
+                    onClick={loadAllData}
+                    className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition"
+                    title="Refresh Incidents"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {/* Filter Pills */}
+                <div className="flex gap-1">
+                  {(["all", "triggered", "acknowledged", "resolved"] as const).map((filter) => (
+                    <button
+                      key={filter}
+                      onClick={() => setStatusFilter(filter)}
+                      className={`px-2.5 py-1 text-[11px] rounded-md capitalize font-medium transition cursor-pointer ${
+                        statusFilter === filter
+                          ? "bg-slate-800 text-emerald-400 font-bold"
+                          : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      {filter}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Queue List */}
+              <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
+                {incidents.length === 0 ? (
+                  <div className="p-8 text-center text-slate-500 text-xs">
+                    No incidents matching filter.
+                  </div>
+                ) : (
+                  incidents.map((inc) => {
+                    const isSelected = inc.id === selectedIncidentId;
+                    return (
+                      <button
+                        key={inc.id}
+                        onClick={() => setSelectedIncidentId(inc.id)}
+                        className={`w-full text-left p-3.5 transition cursor-pointer flex flex-col gap-1.5 ${
+                          isSelected
+                            ? "bg-emerald-950/20 border-l-4 border-l-emerald-500"
+                            : "hover:bg-slate-800/40"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-black ${
+                              inc.severity === "SEV-1"
+                                ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                                : inc.severity === "SEV-2"
+                                ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                                : "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                            }`}
+                          >
+                            {inc.severity}
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold ${
+                              inc.status === "triggered"
+                                ? "bg-rose-500/10 text-rose-400 animate-pulse"
+                                : inc.status === "acknowledged"
+                                ? "bg-amber-500/10 text-amber-400"
+                                : "bg-emerald-500/10 text-emerald-400"
+                            }`}
+                          >
+                            {inc.status}
+                          </span>
+                        </div>
+
+                        <div className="text-xs font-semibold text-slate-200 line-clamp-2">
+                          {inc.title}
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 mt-1">
+                          <span className="truncate max-w-[150px]">
+                            {inc.service?.name || "Cisco Service"}
+                          </span>
+                          <span className="font-mono text-[10px]">
+                            {new Date(inc.created_at).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Right Column: Selected Incident Detail */}
+            <div className="col-span-8 bg-slate-900/80 border border-slate-800 rounded-xl p-6 flex flex-col overflow-hidden">
+              {selectedIncident ? (
+                <div className="space-y-6 overflow-y-auto pr-1">
+                  {/* Top Bar: Title, Severity, Service, Status */}
                   <div>
-                    <div className="font-semibold">Connectivity Error</div>
-                    <div className="text-neutral-400 mt-0.5">{healthError}</div>
+                    <div className="flex items-center justify-between gap-3 mb-2">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 rounded text-xs font-black ${
+                            selectedIncident.severity === "SEV-1"
+                              ? "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                              : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                          }`}
+                        >
+                          {selectedIncident.severity}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
+                            selectedIncident.status === "triggered"
+                              ? "bg-rose-500/20 text-rose-400"
+                              : selectedIncident.status === "acknowledged"
+                              ? "bg-amber-500/20 text-amber-400"
+                              : "bg-emerald-500/20 text-emerald-400"
+                          }`}
+                        >
+                          {selectedIncident.status}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          ID: #{selectedIncident.id}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-slate-400 font-mono">
+                        Triggered: {new Date(selectedIncident.created_at).toLocaleString()}
+                      </div>
+                    </div>
+
+                    <h1 className="text-xl font-bold text-white mb-2 leading-snug">
+                      {selectedIncident.title}
+                    </h1>
+
+                    <div className="flex items-center gap-4 text-xs text-slate-400">
+                      <span>
+                        Service:{" "}
+                        <strong className="text-slate-200">
+                          {selectedIncident.service?.name}
+                        </strong>{" "}
+                        ({selectedIncident.service?.tier})
+                      </span>
+                      <span>&bull;</span>
+                      <span>
+                        Assigned:{" "}
+                        <strong className="text-slate-200">
+                          {selectedIncident.assigned_to || "Unassigned"}
+                        </strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* ========================================================= */}
+                  {/* HERO SECTION: AI-NATIVE ACTIONABLE REMEDIATION PASS BANNER */}
+                  {/* ========================================================= */}
+                  {selectedIncident.ai_triage_pass ? (
+                    <div className="relative overflow-hidden rounded-xl border border-emerald-500/40 bg-gradient-to-br from-emerald-950/60 via-slate-900 to-slate-900 p-5 shadow-xl shadow-emerald-950/30">
+                      <div className="flex items-center justify-between mb-3.5">
+                        <div className="flex items-center gap-2">
+                          <div className="p-1.5 bg-emerald-500/20 text-emerald-400 rounded-lg">
+                            <Zap className="w-5 h-5 animate-pulse" />
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                              Actionable Remediation Pass (Kullanılabilir Pas)
+                              <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                {selectedIncident.ai_triage_pass.confidence_score}% Confidence
+                              </span>
+                            </h3>
+                            <p className="text-[11px] text-emerald-400/80">
+                              Synthesized by Rails 8 AI Engine &bull; Matched:{" "}
+                              {selectedIncident.ai_triage_pass.matched_historical_incident}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="px-2.5 py-1 bg-emerald-900/40 border border-emerald-500/30 rounded-lg text-emerald-300 font-mono text-xs">
+                          ~{selectedIncident.ai_triage_pass.estimated_time_saved_minutes}m MTTR Saved
+                        </div>
+                      </div>
+
+                      {/* Root cause hypothesis */}
+                      <div className="mb-3 p-3 bg-slate-950/80 border border-emerald-500/20 rounded-lg">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block mb-1">
+                          Root Cause Hypothesis
+                        </span>
+                        <p className="text-xs text-slate-200 leading-relaxed">
+                          {selectedIncident.ai_triage_pass.root_cause_hypothesis}
+                        </p>
+                      </div>
+
+                      {/* Suggested Runbook Command with Copy */}
+                      <div className="mb-4">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1">
+                            <Terminal className="w-3 h-3 text-emerald-400" />
+                            Executable Runbook Command
+                          </span>
+                          <button
+                            onClick={() =>
+                              handleCopyRunbook(
+                                selectedIncident.ai_triage_pass?.suggested_runbook_command || ""
+                              )
+                            }
+                            className="text-[11px] text-slate-400 hover:text-emerald-400 flex items-center gap-1 transition"
+                          >
+                            <Copy className="w-3 h-3" />
+                            {copiedCommand ? "Copied!" : "Copy Command"}
+                          </button>
+                        </div>
+                        <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg font-mono text-xs text-emerald-400 overflow-x-auto">
+                          {selectedIncident.ai_triage_pass.suggested_runbook_command}
+                        </div>
+                      </div>
+
+                      {/* Draft Status Update */}
+                      <div className="mb-4 text-xs text-slate-400">
+                        <span className="font-semibold text-slate-300">Draft Status Update: </span>
+                        &ldquo;{selectedIncident.ai_triage_pass.draft_status_update}&rdquo;
+                      </div>
+
+                      {/* Success Feedback Alert */}
+                      {passSuccessMessage && (
+                        <div className="mb-4 p-3 bg-emerald-500/20 border border-emerald-500/40 rounded-lg text-xs text-emerald-200 flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>{passSuccessMessage}</span>
+                        </div>
+                      )}
+
+                      {/* Big Action Button */}
+                      {selectedIncident.status === "resolved" ? (
+                        <div className="flex items-center justify-between p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+                          <div className="flex items-center gap-2 text-xs font-semibold text-emerald-300">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            <span>Remediated via PulseGuard AI Pass &bull; Status Resolved</span>
+                          </div>
+                          {selectedIncident.postmortem && (
+                            <button
+                              onClick={() => {
+                                setSelectedPostmortem(selectedIncident.postmortem!);
+                                setIsPostmortemModalOpen(true);
+                              }}
+                              className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition"
+                            >
+                              View Draft Postmortem
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <button
+                          onClick={handleApplyAiPass}
+                          disabled={isApplyingPass}
+                          className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white text-sm font-bold rounded-lg shadow-lg shadow-emerald-600/30 transition cursor-pointer"
+                        >
+                          <Zap className="w-4 h-4 fill-white" />
+                          {isApplyingPass
+                            ? "Applying Remediation, Mutating State & Drafting Postmortem..."
+                            : "⚡ Apply 1-Click AI Remediation Pass"}
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {/* Manual Triage Controls */}
+                  <div className="flex items-center justify-between p-3.5 bg-slate-950/60 border border-slate-800 rounded-lg">
+                    <div className="text-xs text-slate-400">
+                      Standard Manual Controls (Acting as{" "}
+                      <strong className="text-slate-200">{selectedPersona}</strong>):
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {selectedIncident.status === "triggered" && (
+                        <button
+                          onClick={() => handleTransition("acknowledge")}
+                          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
+                        >
+                          Acknowledge
+                        </button>
+                      )}
+                      {selectedIncident.status !== "resolved" && (
+                        <button
+                          onClick={() => handleTransition("resolve")}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition cursor-pointer"
+                        >
+                          Mark Resolved
+                        </button>
+                      )}
+                      {selectedIncident.postmortem && (
+                        <button
+                          onClick={() => {
+                            setSelectedPostmortem(selectedIncident.postmortem!);
+                            setIsPostmortemModalOpen(true);
+                          }}
+                          className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold rounded-lg transition cursor-pointer"
+                        >
+                          Post-Mortem
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Error Stack Trace Viewer */}
+                  {selectedIncident.error_signature && (
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3.5">
+                      <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+                        <Terminal className="w-3.5 h-3.5 text-rose-400" />
+                        Raw Error Signature &amp; Stack Trace
+                      </div>
+                      <pre className="text-xs font-mono text-rose-300/90 whitespace-pre-wrap leading-relaxed overflow-x-auto bg-slate-900/50 p-2.5 rounded border border-slate-800/80">
+                        {selectedIncident.error_signature}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Live Audit Timeline */}
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 mb-3 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                      Live Incident Audit Timeline
+                    </h4>
+                    <div className="relative pl-6 space-y-4 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-[1px] before:bg-slate-800">
+                      {selectedIncident.events?.map((ev) => (
+                        <div key={ev.id} className="relative">
+                          {/* Dot */}
+                          <div
+                            className={`absolute -left-6 top-1 w-2.5 h-2.5 rounded-full border-2 ${
+                              ev.action_type === "runbook_executed"
+                                ? "bg-emerald-400 border-emerald-950 ring-4 ring-emerald-500/20"
+                                : ev.action_type === "triggered"
+                                ? "bg-rose-400 border-rose-950"
+                                : ev.action_type === "resolved"
+                                ? "bg-teal-400 border-teal-950"
+                                : "bg-blue-400 border-blue-950"
+                            }`}
+                          />
+                          <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-lg text-xs">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-semibold text-slate-200">
+                                {ev.actor}
+                              </span>
+                              <span className="text-[10px] font-mono text-slate-500">
+                                {new Date(ev.created_at).toLocaleTimeString()}
+                              </span>
+                            </div>
+                            <p className="text-slate-300 leading-relaxed font-sans">
+                              {ev.detail}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ) : (
-                <div className="space-y-3 pt-2">
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-950/70 border border-neutral-800/60 text-xs">
-                    <span className="text-neutral-400 flex items-center gap-1.5">
-                      <Cpu className="h-3.5 w-3.5 text-neutral-500" /> Rails Version:
-                    </span>
-                    <span className="font-mono text-cyan-300 font-semibold">
-                      {health?.rails_version || "—"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-950/70 border border-neutral-800/60 text-xs">
-                    <span className="text-neutral-400 flex items-center gap-1.5">
-                      <Database className="h-3.5 w-3.5 text-neutral-500" /> PostgreSQL Connection:
-                    </span>
-                    <span className="font-mono font-semibold flex items-center gap-1 text-emerald-400">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      {health?.db_connected ? "Connected (Healthy)" : "Disconnected"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-950/70 border border-neutral-800/60 text-xs">
-                    <span className="text-neutral-400 flex items-center gap-1.5">
-                      <Activity className="h-3.5 w-3.5 text-neutral-500" /> Round-Trip Latency:
-                    </span>
-                    <span className="font-mono font-semibold text-white">
-                      {healthLatency !== null ? `${healthLatency} ms` : "—"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-neutral-950/70 border border-neutral-800/60 text-xs">
-                    <span className="text-neutral-400 flex items-center gap-1.5">
-                      <ShieldCheck className="h-3.5 w-3.5 text-neutral-500" /> AI Service Mode:
-                    </span>
-                    <span
-                      className={`font-mono text-[11px] px-2 py-0.5 rounded font-semibold ${
-                        health?.ai_mode === "live_gemini"
-                          ? "bg-purple-950/80 text-purple-300 border border-purple-800"
-                          : "bg-amber-950/80 text-amber-300 border border-amber-800"
-                      }`}
-                    >
-                      {health?.ai_mode || "—"}
-                    </span>
-                  </div>
+                <div className="h-full flex items-center justify-center text-slate-500 text-xs">
+                  Select an incident from the queue to view full triage details.
                 </div>
-              )}
-            </div>
-
-            <div className="pt-4 mt-4 border-t border-neutral-800/60 flex items-center justify-between text-[11px] text-neutral-500 font-mono">
-              <span>DB Records: {health?.total_logs ?? totalLogs}</span>
-              <span>{health?.timestamp ? new Date(health.timestamp).toLocaleTimeString() : "—"}</span>
-            </div>
-          </div>
-
-          {/* ========================================================
-              CARD 2: End-to-End Database Write Test
-             ======================================================== */}
-          <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-6 flex flex-col justify-between shadow-xl relative overflow-hidden group hover:border-emerald-500/40 transition">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none" />
-
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center space-x-2">
-                  <div className="p-2 rounded-lg bg-emerald-950/60 border border-emerald-800/50 text-emerald-400">
-                    <Database className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h2 className="font-semibold text-white text-base">PostgreSQL Read/Write</h2>
-                    <p className="text-xs text-neutral-400">Card 2: E2E Transaction Test</p>
-                  </div>
-                </div>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-neutral-700 bg-neutral-800 text-neutral-300">
-                  {totalLogs} Events
-                </span>
-              </div>
-
-              <div className="space-y-3 pt-2">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-mono text-neutral-400">Event Tag</label>
-                  <input
-                    type="text"
-                    value={customEventType}
-                    onChange={(e) => setCustomEventType(e.target.value)}
-                    placeholder="e.g. USER_PROVISIONED"
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-mono text-neutral-400">Telemetry Payload</label>
-                  <input
-                    type="text"
-                    value={customMessage}
-                    onChange={(e) => setCustomMessage(e.target.value)}
-                    placeholder="Custom payload note (optional)"
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <button
-                  onClick={handleWriteEvent}
-                  disabled={isWritingLog}
-                  className="w-full py-2.5 px-4 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-medium text-xs tracking-wide shadow-lg shadow-emerald-950/50 flex items-center justify-center space-x-2 transition disabled:opacity-50 cursor-pointer"
-                >
-                  <Zap className={`h-4 w-4 ${isWritingLog ? "animate-spin" : ""}`} />
-                  <span>
-                    {isWritingLog ? "Committing to DB..." : "Write Synthetic Event to PostgreSQL"}
-                  </span>
-                </button>
-
-                {logsError && (
-                  <p className="text-xs text-red-400 font-mono pt-1">{logsError}</p>
-                )}
-              </div>
-            </div>
-
-            <div className="pt-4 mt-4 border-t border-neutral-800/60 flex items-center justify-between text-[11px] text-neutral-500 font-mono">
-              <span>Target Table: system_logs</span>
-              <span className="text-emerald-400">Zero Refresh Sync</span>
-            </div>
-          </div>
-
-          {/* ========================================================
-              CARD 3: Backend-Only AI Pass Engine Test
-             ======================================================== */}
-          <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-6 flex flex-col justify-between shadow-xl relative overflow-hidden group hover:border-purple-500/40 transition">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none" />
-
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center space-x-2">
-                  <div className="p-2 rounded-lg bg-purple-950/60 border border-purple-800/50 text-purple-400">
-                    <Sparkles className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h2 className="font-semibold text-white text-base">Backend AI Engine</h2>
-                    <p className="text-xs text-neutral-400">Card 3: Resilient Gemini Pass</p>
-                  </div>
-                </div>
-                <span
-                  className={`text-[11px] font-mono px-2 py-0.5 rounded-full border ${
-                    aiResult?.mode === "live_gemini"
-                      ? "border-purple-500/30 bg-purple-950/50 text-purple-300"
-                      : "border-neutral-700 bg-neutral-800 text-neutral-400"
-                  }`}
-                >
-                  {aiResult?.mode?.toUpperCase() || "READY"}
-                </span>
-              </div>
-
-              <div className="space-y-3 pt-2">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-mono text-neutral-400">Prompt / Intent</label>
-                  <textarea
-                    rows={2}
-                    value={aiPrompt}
-                    onChange={(e) => setAiPrompt(e.target.value)}
-                    placeholder="Enter test prompt for backend LLM pipeline..."
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-purple-500 resize-none font-sans"
-                  />
-                </div>
-
-                <button
-                  onClick={handleTestAi}
-                  disabled={isAiRunning}
-                  className="w-full py-2.5 px-4 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-xs tracking-wide shadow-lg shadow-purple-950/50 flex items-center justify-center space-x-2 transition disabled:opacity-50 cursor-pointer"
-                >
-                  <Send className={`h-4 w-4 ${isAiRunning ? "animate-pulse" : ""}`} />
-                  <span>
-                    {isAiRunning ? "Calling Rails AI Service..." : "Test Rails AI Pipeline"}
-                  </span>
-                </button>
-
-                {aiError && (
-                  <p className="text-xs text-red-400 font-mono pt-1">{aiError}</p>
-                )}
-              </div>
-            </div>
-
-            <div className="pt-4 mt-4 border-t border-neutral-800/60 flex items-center justify-between text-[11px] text-neutral-500 font-mono">
-              <span>Security: Backend-Only Key</span>
-              {aiLatency !== null && <span className="text-purple-400">{aiLatency} ms</span>}
-            </div>
-          </div>
-        </div>
-
-        {/* AI Response Output Block if executed */}
-        {aiResult && (
-          <div className="rounded-xl border border-purple-900/50 bg-neutral-900/60 p-5 shadow-2xl relative">
-            <div className="flex items-center justify-between mb-3 border-b border-neutral-800 pb-2">
-              <div className="flex items-center space-x-2 text-xs font-mono">
-                <Terminal className="h-4 w-4 text-purple-400" />
-                <span className="text-purple-300 font-semibold">
-                  AI Pipeline Structured Response
-                </span>
-                <span className="text-neutral-500">({aiResult.mode})</span>
-              </div>
-              <span className="text-[11px] font-mono text-neutral-400">
-                {new Date(aiResult.timestamp).toLocaleTimeString()}
-              </span>
-            </div>
-
-            <div className="p-3 bg-neutral-950 rounded-lg border border-neutral-800/80 mb-3">
-              <div className="text-xs font-mono text-neutral-400 mb-1">actionable_pass_preview:</div>
-              <p className="text-sm text-neutral-100 font-sans">
-                {aiResult.actionable_pass_preview}
-              </p>
-            </div>
-
-            <div className="text-[11px] font-mono text-neutral-500 flex flex-wrap gap-x-6 gap-y-1">
-              <span>Status: <strong className="text-neutral-300">{aiResult.status}</strong></span>
-              <span>Mode: <strong className="text-neutral-300">{aiResult.mode}</strong></span>
-              {aiResult.model && (
-                <span>Model: <strong className="text-neutral-300">{aiResult.model}</strong></span>
-              )}
-              {aiResult.fallback_reason && (
-                <span>Fallback Reason: <strong className="text-amber-400">{aiResult.fallback_reason}</strong></span>
               )}
             </div>
           </div>
         )}
 
-        {/* Live PostgreSQL Event Telemetry Table */}
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 overflow-hidden shadow-xl">
-          <div className="px-6 py-4 border-b border-neutral-800/80 flex items-center justify-between bg-neutral-900/50">
-            <div className="flex items-center space-x-2">
-              <Activity className="h-4 w-4 text-cyan-400" />
-              <h3 className="text-sm font-semibold text-white">
-                Live PostgreSQL Telemetry Stream (`system_logs`)
-              </h3>
-              <span className="text-xs font-mono text-neutral-500">
-                ({logs.length} most recent)
-              </span>
+        {/* ========================================================================= */}
+        {/* TAB 2: SERVICES & ON-CALL MATRIX */}
+        {/* ========================================================================= */}
+        {activeTab === "services" && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-white">
+                  Cisco Cloud Monitored Services &amp; On-Call Escalation Matrix
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Real-time health monitoring and dynamic on-call engineer reassignment.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setDrillServiceId(undefined);
+                  setIsOutageModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg shadow transition cursor-pointer"
+              >
+                <Flame className="w-3.5 h-3.5" />
+                Simulate Chaos Drill
+              </button>
             </div>
-            <button
-              onClick={() => fetchSystemLogs().then((res) => res.data && setLogs(res.data.logs))}
-              className="text-xs font-mono text-cyan-400 hover:text-cyan-300 flex items-center space-x-1"
-            >
-              <RefreshCw className="h-3 w-3" />
-              <span>Poll Now</span>
-            </button>
-          </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono">
-              <thead className="bg-neutral-950/80 text-neutral-400 border-b border-neutral-800/60 uppercase text-[10px]">
-                <tr>
-                  <th className="py-3 px-4">ID</th>
-                  <th className="py-3 px-4">Event Type</th>
-                  <th className="py-3 px-4">Message</th>
-                  <th className="py-3 px-4">Metadata</th>
-                  <th className="py-3 px-4">Recorded At</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-800/50 text-neutral-300">
-                {logs.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="py-8 text-center text-neutral-500">
-                      No system logs found in PostgreSQL.
-                    </td>
-                  </tr>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {services.map((svc) => (
+                <div
+                  key={svc.id}
+                  className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 flex flex-col justify-between"
+                >
+                  <div>
+                    {/* Header: Name + Status */}
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                        {svc.tier}
+                      </span>
+                      <span
+                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold uppercase ${
+                          svc.status === "healthy"
+                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                            : svc.status === "degraded"
+                            ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                            : "bg-rose-500/10 text-rose-400 border border-rose-500/30"
+                        }`}
+                      >
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            svc.status === "healthy"
+                              ? "bg-emerald-400"
+                              : svc.status === "degraded"
+                              ? "bg-amber-400 animate-pulse"
+                              : "bg-rose-500 animate-pulse"
+                          }`}
+                        />
+                        {svc.status}
+                      </span>
+                    </div>
+
+                    <h3 className="text-sm font-bold text-white mb-1.5">{svc.name}</h3>
+                    <div className="text-[11px] font-mono text-slate-500 mb-4">{svc.slug}</div>
+
+                    {/* Escalation Policy */}
+                    <div className="mb-4 p-2.5 bg-slate-950 border border-slate-800/80 rounded-lg text-xs">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
+                        Escalation Policy
+                      </span>
+                      <span className="text-slate-300 font-mono text-[11px]">
+                        {svc.escalation_policy || "Standard Tier 1 Escalation"}
+                      </span>
+                    </div>
+
+                    {/* On-Call Reassignment Dropdown */}
+                    <div className="mb-4">
+                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">
+                        Current On-Call Lead
+                      </label>
+                      <select
+                        value={svc.on_call_engineer}
+                        onChange={(e) => handleUpdateServiceOnCall(svc.id, e.target.value)}
+                        disabled={serviceUpdateLoading === svc.id}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                      >
+                        {PERSONAS.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Card Actions */}
+                  <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
+                    <span className="text-slate-400">
+                      Active:{" "}
+                      <strong
+                        className={
+                          (svc.active_incidents_count || 0) > 0
+                            ? "text-rose-400 font-bold"
+                            : "text-slate-300"
+                        }
+                      >
+                        {svc.active_incidents_count || 0}
+                      </strong>
+                    </span>
+                    <button
+                      onClick={() => handleOpenDrill(svc.id)}
+                      className="px-2.5 py-1 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded border border-rose-500/30 transition"
+                    >
+                      Trigger Drill
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 3: POST-MORTEMS & UNIT ECONOMICS HUB */}
+        {/* ========================================================================= */}
+        {activeTab === "postmortem" && (
+          <div className="space-y-8">
+            {/* Blameless Post-Mortem Archive */}
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-lg font-bold text-white">
+                    Cisco Systems Blameless Post-Mortem Archive
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Auto-generated postmortems with verifiable root cause and prevention action items.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {postmortems.length === 0 ? (
+                  <div className="col-span-2 p-8 text-center bg-slate-900 border border-slate-800 rounded-xl text-slate-500 text-xs">
+                    No postmortems recorded yet. Apply an AI Remediation Pass to auto-generate one.
+                  </div>
                 ) : (
-                  logs.map((log) => (
-                    <tr key={log.id} className="hover:bg-neutral-800/30 transition">
-                      <td className="py-3 px-4 text-neutral-500">#{log.id}</td>
-                      <td className="py-3 px-4">
-                        <span className="px-2 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-cyan-300 font-semibold">
-                          {log.event_type}
+                  postmortems.map((pm) => (
+                    <div
+                      key={pm.id}
+                      onClick={() => {
+                        setSelectedPostmortem(pm);
+                        setIsPostmortemModalOpen(true);
+                      }}
+                      className="bg-slate-900/90 border border-slate-800 hover:border-slate-700 rounded-xl p-5 cursor-pointer transition flex flex-col justify-between"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              pm.published
+                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                                : "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                            }`}
+                          >
+                            {pm.published ? "PUBLISHED" : "DRAFT (AI SYNTHESIZED)"}
+                          </span>
+                          <span className="text-[11px] text-slate-500 font-mono">
+                            {new Date(pm.created_at).toLocaleDateString()}
+                          </span>
+                        </div>
+
+                        <h3 className="text-sm font-bold text-white mb-1.5">
+                          {pm.incident?.title || "Incident Post-Mortem"}
+                        </h3>
+                        <p className="text-xs text-slate-400 mb-3 line-clamp-2 leading-relaxed">
+                          {pm.summary}
+                        </p>
+
+                        <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs mb-3">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 block mb-0.5">
+                            Root Cause
+                          </span>
+                          <span className="text-rose-300 font-mono text-[11px] line-clamp-2">
+                            {pm.root_cause}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+                        <span>
+                          Action items:{" "}
+                          <strong className="text-slate-200">
+                            {pm.action_items?.filter((a) => a.completed).length || 0} /{" "}
+                            {pm.action_items?.length || 0} completed
+                          </strong>
                         </span>
-                      </td>
-                      <td className="py-3 px-4 text-neutral-200 max-w-md truncate">
-                        {log.message}
-                      </td>
-                      <td className="py-3 px-4 text-neutral-400 max-w-xs truncate">
-                        {log.metadata ? JSON.stringify(log.metadata) : "—"}
-                      </td>
-                      <td className="py-3 px-4 text-neutral-500 whitespace-nowrap">
-                        {new Date(log.created_at).toLocaleString()}
-                      </td>
-                    </tr>
+                        <span className="text-emerald-400 flex items-center gap-1 font-medium">
+                          Review Report &rarr;
+                        </span>
+                      </div>
+                    </div>
                   ))
                 )}
-              </tbody>
-            </table>
+              </div>
+            </div>
+
+            {/* Executive Unit Economics & Cisco ROI Section */}
+            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 rounded-xl p-6">
+              <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-6">
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <DollarSign className="w-5 h-5 text-emerald-400" />
+                    Executive Unit Economics &amp; Cisco ROI Calculator
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Comparative business case: Legacy PagerDuty Enterprise vs. PulseGuard AI-Native Platform.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setIsProofModalOpen(true)}
+                  className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-semibold"
+                >
+                  Cisco Documentation Proof &rarr;
+                </button>
+              </div>
+
+              {/* Calculator Inputs */}
+              <div className="grid grid-cols-2 gap-6 mb-6">
+                <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs font-semibold text-slate-300">
+                      Cisco On-Call SREs &amp; Engineers
+                    </label>
+                    <span className="text-xs font-mono font-bold text-emerald-400">
+                      {calcEngineers} Engineers
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={50}
+                    max={1200}
+                    step={25}
+                    value={calcEngineers}
+                    onChange={(e) => setCalcEngineers(Number(e.target.value))}
+                    className="w-full accent-emerald-500 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-500 mt-1 font-mono">
+                    <span>50</span>
+                    <span>450 (Standard Cisco Org)</span>
+                    <span>1,200</span>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs font-semibold text-slate-300">
+                      Monthly Cloud Outages &amp; Incidents
+                    </label>
+                    <span className="text-xs font-mono font-bold text-emerald-400">
+                      {calcIncidentsPerMonth} Incidents / Mo
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={50}
+                    max={1500}
+                    step={25}
+                    value={calcIncidentsPerMonth}
+                    onChange={(e) => setCalcIncidentsPerMonth(Number(e.target.value))}
+                    className="w-full accent-emerald-500 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-500 mt-1 font-mono">
+                    <span>50</span>
+                    <span>340 (Avg Volume)</span>
+                    <span>1,500</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Comparison Scorecard */}
+              <div className="grid grid-cols-3 gap-4">
+                {/* Legacy PagerDuty */}
+                <div className="p-4 bg-rose-500/5 border border-rose-500/20 rounded-xl">
+                  <div className="text-[11px] font-bold uppercase text-rose-400 tracking-wider mb-1">
+                    Legacy PagerDuty Bill
+                  </div>
+                  <div className="text-2xl font-black text-rose-400 mb-1">
+                    ${pagerDutyCostAnnual.toLocaleString()}
+                    <span className="text-xs font-normal text-slate-400"> / yr</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Based on standard Enterprise tier at $220/user/month. Dumb alerts without triage.
+                  </p>
+                </div>
+
+                {/* PulseGuard AI-Native */}
+                <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl">
+                  <div className="text-[11px] font-bold uppercase text-emerald-400 tracking-wider mb-1">
+                    PulseGuard AI Run Cost
+                  </div>
+                  <div className="text-2xl font-black text-emerald-400 mb-1">
+                    ${Math.round(totalPulseGuardAnnual).toLocaleString()}
+                    <span className="text-xs font-normal text-slate-400"> / yr</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    $42k Kubernetes hosting + $0.002 per Gemini pass. 1-click remediation included.
+                  </p>
+                </div>
+
+                {/* Cisco Net Bottom-Line Savings */}
+                <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl">
+                  <div className="text-[11px] font-bold uppercase text-blue-400 tracking-wider mb-1">
+                    Cisco Net Annual Savings
+                  </div>
+                  <div className="text-2xl font-black text-blue-400 mb-1">
+                    ${Math.round(annualSavings).toLocaleString()}
+                    <span className="text-xs font-normal text-blue-300 ml-1">
+                      ({savingsPercent}%)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Eliminates ~{hoursSavedAnnual.toLocaleString()} hours of on-call engineer toil annually.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-neutral-900 py-6 text-center text-xs font-mono text-neutral-600">
-        Operation SSS &bull; Phase 0: SaaS-Agnostic Core Infrastructure &bull; Deploy Rule: Day 1
-      </footer>
+      {/* Modals */}
+      <SimulateOutageModal
+        isOpen={isOutageModalOpen}
+        onClose={() => setIsOutageModalOpen(false)}
+        services={services}
+        onIncidentCreated={handleIncidentCreated}
+        defaultServiceId={drillServiceId}
+      />
+
+      <ProofModal
+        isOpen={isProofModalOpen}
+        onClose={() => setIsProofModalOpen(false)}
+      />
+
+      <PostmortemModal
+        isOpen={isPostmortemModalOpen}
+        onClose={() => setIsPostmortemModalOpen(false)}
+        postmortem={selectedPostmortem}
+        onPostmortemUpdated={(updated) => {
+          setSelectedPostmortem(updated);
+          setPostmortems((prev) =>
+            prev.map((pm) => (pm.id === updated.id ? updated : pm))
+          );
+        }}
+      />
     </div>
   );
 }
