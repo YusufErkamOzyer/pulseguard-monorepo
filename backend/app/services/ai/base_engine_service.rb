@@ -5,8 +5,13 @@ require "uri"
 module Ai
   class BaseEngineService
     DEFAULT_FALLBACK_TEXT = "AI Engine Ready — Waiting for SaaS domain schema.".freeze
-    GEMINI_MODEL = "gemini-2.5-flash".freeze
-    GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/#{GEMINI_MODEL}:generateContent".freeze
+    def self.gemini_model
+      ENV.fetch("GEMINI_MODEL", "gemini-3.8-flash")
+    end
+
+    def self.gemini_api_url
+      "https://generativelanguage.googleapis.com/v1beta/models/#{gemini_model}:generateContent"
+    end
 
     def self.call(prompt = nil)
       new(prompt).call
@@ -31,7 +36,7 @@ module Ai
     private
 
     def call_gemini_api
-      uri = URI("#{GEMINI_API_URL}?key=#{@api_key}")
+      uri = URI("#{self.class.gemini_api_url}?key=#{@api_key}")
       request = Net::HTTP::Post.new(uri)
       request["Content-Type"] = "application/json"
       request.body = {
@@ -46,20 +51,22 @@ module Ai
 
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
-      http.open_timeout = 7
-      http.read_timeout = 10
+      http.open_timeout = 15
+      http.read_timeout = ENV.fetch("GEMINI_READ_TIMEOUT", "100").to_i
 
       response = http.request(request)
 
       if response.is_a?(Net::HTTPSuccess)
         parsed = JSON.parse(response.body)
-        candidate_text = parsed.dig("candidates", 0, "content", "parts", 0, "text")
+        candidate_parts = parsed.dig("candidates", 0, "content", "parts") || []
+        text_part = candidate_parts.find { |p| p["text"].present? && !p["thought"] } || candidate_parts.first
+        candidate_text = text_part&.dig("text")
 
         if candidate_text.present?
           {
             status: "ok",
             mode: "live_gemini",
-            model: GEMINI_MODEL,
+            model: self.class.gemini_model,
             actionable_pass_preview: candidate_text.strip,
             timestamp: Time.current.iso8601
           }

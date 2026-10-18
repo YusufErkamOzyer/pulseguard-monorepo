@@ -13,6 +13,15 @@ backend/log/*.log
 backend/storage/
 backend/config/master.key
 
+# Environment files
+.env
+.env.*
+*.env
+backend/.env
+backend/.env.*
+frontend/.env.local
+frontend/.env.*.local
+
 # OS files
 .DS_Store
 Thumbs.db

@@ -4,8 +4,13 @@ require "uri"
 
 module Ai
   class IncidentPassGeneratorService
-    GEMINI_MODEL = "gemini-2.5-flash".freeze
-    GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/#{GEMINI_MODEL}:generateContent".freeze
+    def self.gemini_model
+      ENV.fetch("GEMINI_MODEL", "gemini-3.8-flash")
+    end
+
+    def self.gemini_api_url
+      "https://generativelanguage.googleapis.com/v1beta/models/#{gemini_model}:generateContent"
+    end
 
     def self.call(incident)
       new(incident).call
@@ -31,7 +36,7 @@ module Ai
     private
 
     def call_gemini
-      uri = URI("#{GEMINI_API_URL}?key=#{@api_key}")
+      uri = URI("#{self.class.gemini_api_url}?key=#{@api_key}")
       request = Net::HTTP::Post.new(uri)
       request["Content-Type"] = "application/json"
 
@@ -46,7 +51,7 @@ module Ai
         - Error Signature:
         #{@incident.error_signature.presence || "No stacktrace provided"}
 
-        Return a single STRICT JSON object (no markdown code fences, no extra text) with EXACTLY these keys:
+        Return a single STRICT JSON object with EXACTLY these keys:
         {
           "root_cause_hypothesis": "1-2 sentence precise technical root cause",
           "confidence_score": integer between 85 and 99,
@@ -66,29 +71,36 @@ module Ai
               { text: prompt }
             ]
           }
-        ]
+        ],
+        generationConfig: {
+          response_mime_type: "application/json"
+        }
       }.to_json
 
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
-      http.open_timeout = 5
-      http.read_timeout = 8
+      http.open_timeout = 15
+      http.read_timeout = ENV.fetch("GEMINI_READ_TIMEOUT", "100").to_i
 
       response = http.request(request)
       return nil unless response.is_a?(Net::HTTPSuccess)
 
       parsed_body = JSON.parse(response.body)
-      text = parsed_body.dig("candidates", 0, "content", "parts", 0, "text")
+      candidate_parts = parsed_body.dig("candidates", 0, "content", "parts") || []
+      text_part = candidate_parts.find { |p| p["text"].present? && !p["thought"] } || candidate_parts.first
+      text = text_part&.dig("text")
       return nil if text.blank?
 
       # Sanitize markdown code fences if Gemini included them
       clean_json = text.strip
       clean_json = clean_json.gsub(/\A```(?:json)?\s*/i, "").gsub(/\s*```\z/i, "").strip
+      json_match = clean_json.match(/\{[\s\S]*\}/)
+      clean_json = json_match[0] if json_match
 
       parsed_pass = JSON.parse(clean_json)
       parsed_pass.merge(
         "mode" => "live_gemini",
-        "model" => GEMINI_MODEL,
+        "model" => self.class.gemini_model,
         "generated_at" => Time.current.iso8601
       )
     rescue StandardError => e
