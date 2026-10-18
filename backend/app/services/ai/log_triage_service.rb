@@ -7,11 +7,7 @@ require "uri"
 module Ai
   class LogTriageService
     def self.gemini_model
-      ENV.fetch("GEMINI_MODEL", "gemini-3.8-flash")
-    end
-
-    def self.gemini_api_url
-      "https://generativelanguage.googleapis.com/v1beta/models/#{gemini_model}:generateContent"
+      Ai::GeminiClient.primary_model
     end
 
     def self.call(raw_alerts:, services:, preferred_service: nil)
@@ -40,10 +36,6 @@ module Ai
     private
 
     def call_gemini
-      uri = URI("#{self.class.gemini_api_url}?key=#{@api_key}")
-      request = Net::HTTP::Post.new(uri)
-      request["Content-Type"] = "application/json"
-
       service_catalog = @services.map { |s| "- #{s.slug}: #{s.name} (#{s.tier})" }.join("\n")
       sample_logs = @raw_alerts.first(12).map.with_index(1) do |a, idx|
         msg = a.is_a?(Hash) ? a[:message] || a["message"] : a.message
@@ -71,34 +63,15 @@ module Ai
         }
       PROMPT
 
-      request.body = {
-        contents: [
-          {
-            parts: [
-              { text: prompt }
-            ]
-          }
-        ],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
-      }.to_json
+      res = Ai::GeminiClient.generate_content(
+        prompt: prompt,
+        json_mode: true,
+        read_timeout: ENV.fetch("GEMINI_READ_TIMEOUT", "45").to_i,
+        api_key: @api_key
+      )
+      return nil unless res[:success] && res[:text].present?
 
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
-      http.open_timeout = 12
-      http.read_timeout = ENV.fetch("GEMINI_READ_TIMEOUT", "45").to_i
-
-      response = http.request(request)
-      return nil unless response.is_a?(Net::HTTPSuccess)
-
-      parsed_body = JSON.parse(response.body)
-      candidate_parts = parsed_body.dig("candidates", 0, "content", "parts") || []
-      text_part = candidate_parts.find { |p| p["text"].present? && !p["thought"] } || candidate_parts.first
-      text = text_part&.dig("text")
-      return nil if text.blank?
-
-      clean_json = text.strip.gsub(/\A```(?:json)?\s*/i, "").gsub(/\s*```\z/i, "").strip
+      clean_json = res[:text].strip.gsub(/\A```(?:json)?\s*/i, "").gsub(/\s*```\z/i, "").strip
       json_match = clean_json.match(/\{[\s\S]*\}/)
       clean_json = json_match[0] if json_match
 
@@ -111,7 +84,7 @@ module Ai
         "severity" => %w[SEV-1 SEV-2 SEV-3].include?(parsed["severity"]) ? parsed["severity"] : "SEV-1",
         "detection_reasoning" => parsed["detection_reasoning"].presence || "AI ham log akışındaki kök sinyalleri eşleştirerek arızalı servisi tespit etti.",
         "mode" => "live_gemini",
-        "model" => self.class.gemini_model,
+        "model" => res[:model],
         "generated_at" => Time.current.iso8601
       }
     rescue StandardError => e

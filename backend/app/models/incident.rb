@@ -44,8 +44,9 @@ class Incident < ApplicationRecord
       current_pass["draft_status_update"] = broadcast_draft["body"] if broadcast_draft["body"].present?
       update!(ai_triage_pass: current_pass)
 
+      draft_actor_label = broadcast_draft["mode"] == "live_gemini" ? (broadcast_draft["model"] || "Live Gemini") : "AI Engine"
       incident_events.create!(
-        actor: "PulseGuard AI Agent (#{broadcast_draft['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
+        actor: "PulseGuard AI Agent (#{draft_actor_label})",
         action_type: "ai_analyzed",
         detail: "📢 Mühendis vakayı aldığı için Müşteri Bilgilendirme Raporu otomatik hazırlandı ve mühendis onayına sunuldu. 1-Click Çözüm aktif."
       )
@@ -116,8 +117,9 @@ class Incident < ApplicationRecord
       updated_pass["postmortem_model"] = ai_pm["model"]
       update!(ai_triage_pass: updated_pass)
 
+      pm_actor_label = ai_pm["mode"] == "live_gemini" ? (ai_pm["model"] || "Live Gemini") : "AI Engine"
       incident_events.create!(
-        actor: "PulseGuard AI Agent (#{ai_pm['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
+        actor: "PulseGuard AI Agent (#{pm_actor_label})",
         action_type: "ai_analyzed",
         detail: "📄 AI tarafından insan dilinde Blameless Post-Mortem raporu üretildi."
       )

@@ -25,6 +25,8 @@ module Api
           db_connected: db_connected,
           total_logs: total_logs,
           ai_mode: key_present ? "live_gemini" : "deterministic_fallback",
+          ai_models: Ai::GeminiClient.models_chain,
+          primary_model: Ai::GeminiClient.primary_model,
           timestamp: Time.current.iso8601
         }
       end

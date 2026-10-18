@@ -8,6 +8,8 @@ export interface HealthResponse {
   db_connected: boolean;
   total_logs: number;
   ai_mode: "live_gemini" | "deterministic_fallback" | string;
+  ai_models?: string[];
+  primary_model?: string;
   timestamp: string;
 }
 
@@ -186,6 +188,7 @@ export interface StormSummary {
   detected_service_slug?: string;
   detection_reasoning?: string;
   ai_mode?: string;
+  ai_model?: string;
 }
 
 export interface SimulateStormResponse {

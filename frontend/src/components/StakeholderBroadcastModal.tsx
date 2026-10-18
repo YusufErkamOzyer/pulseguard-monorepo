@@ -99,6 +99,9 @@ function StakeholderBroadcastModalContent({
   const [draftMode, setDraftMode] = useState<string | null>(
     incident.ai_triage_pass?.mode || null
   );
+  const [draftModel, setDraftModel] = useState<string | null>(
+    incident.ai_triage_pass?.model || null
+  );
 
   const handleGenerateAiDraft = async () => {
     setIsDrafting(true);
@@ -122,6 +125,7 @@ function StakeholderBroadcastModalContent({
         }
       }
       setDraftMode(res.data.draft.mode || "live_gemini");
+      setDraftModel(res.data.draft.model || null);
     } else {
       setError(res.error || "Failed to generate AI broadcast draft.");
     }
@@ -218,11 +222,11 @@ function StakeholderBroadcastModalContent({
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                AI Broadcast Synthesizer (Gemini 3.8 Flash)
+                AI Broadcast Synthesizer (Gemini Flash Auto-Fallback)
               </span>
               {draftMode && (
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  {draftMode === "live_gemini" ? "Gemini 3.8 Flash" : "Deterministic Fallback"}
+                  {draftMode === "live_gemini" ? (draftModel ? `Live Gemini (${draftModel})` : "Live Gemini") : "Deterministic Fallback"}
                 </span>
               )}
             </div>

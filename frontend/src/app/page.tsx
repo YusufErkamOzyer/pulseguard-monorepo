@@ -135,6 +135,7 @@ export default function PulseGuardDashboard() {
   const [broadcastTitle, setBroadcastTitle] = useState<string>("");
   const [broadcastBody, setBroadcastBody] = useState<string>("");
   const [broadcastAiMode, setBroadcastAiMode] = useState<string | null>(null);
+  const [broadcastDraftModel, setBroadcastDraftModel] = useState<string | null>(null);
   const [isDraftingBroadcast, setIsDraftingBroadcast] = useState<boolean>(false);
   const [isPublishingBroadcast, setIsPublishingBroadcast] = useState<boolean>(false);
   const [broadcastPublishedSuccess, setBroadcastPublishedSuccess] = useState<string | null>(null);
@@ -246,6 +247,7 @@ export default function PulseGuardDashboard() {
           setBroadcastTitle(autoDraft.title);
           setBroadcastBody(autoDraft.body);
           setBroadcastAiMode(autoDraft.mode || inc.ai_triage_pass?.mode || null);
+          setBroadcastDraftModel(autoDraft.model || inc.ai_triage_pass?.model || null);
           if (
             autoDraft.status_type === "investigating" ||
             autoDraft.status_type === "identified" ||
@@ -258,11 +260,13 @@ export default function PulseGuardDashboard() {
           setBroadcastTitle(`${inc.service?.name || "Cisco Servisi"} — Durum Bilgilendirmesi`);
           setBroadcastBody(inc.ai_triage_pass.draft_status_update);
           setBroadcastAiMode(inc.ai_triage_pass.mode || null);
+          setBroadcastDraftModel(inc.ai_triage_pass.model || null);
         } else {
           setBroadcastTitle(`${inc.service?.name || "Cisco Servisi"} Performans İncelemesi`);
           setBroadcastBody(
             `${inc.service?.name || "Servis"} üzerinde yaşanan telemetri sapmaları mühendislik ekibimiz tarafından incelenmektedir.`
           );
+          setBroadcastDraftModel(null);
         }
 
         if (inc.postmortem) {
@@ -345,6 +349,7 @@ export default function PulseGuardDashboard() {
           setBroadcastTitle(`${newInc.service?.name || "Servis"} — Operasyonel Durum Bildirimi`);
           setBroadcastBody(newInc.ai_triage_pass.draft_status_update);
           setBroadcastAiMode(newInc.ai_triage_pass.mode || null);
+          setBroadcastDraftModel(newInc.ai_triage_pass.model || null);
         }
 
         // Select newly added incident in the queue
@@ -391,6 +396,7 @@ export default function PulseGuardDashboard() {
           setBroadcastTitle(draft.title);
           setBroadcastBody(draft.body);
           setBroadcastAiMode(draft.mode || null);
+          setBroadcastDraftModel(draft.model || updated.ai_triage_pass?.model || null);
           if (
             draft.status_type === "investigating" ||
             draft.status_type === "identified" ||
@@ -438,6 +444,7 @@ export default function PulseGuardDashboard() {
         setBroadcastTitle(res.data.draft.title);
         setBroadcastBody(res.data.draft.body);
         setBroadcastAiMode(res.data.draft.mode || null);
+        setBroadcastDraftModel(res.data.draft.model || null);
       }
     } catch (err) {
       console.error("Draft broadcast failed:", err);
@@ -793,7 +800,7 @@ export default function PulseGuardDashboard() {
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 truncate mt-0.5">
-                {aiTask?.active ? aiTask.taskName : "Gemini 3.8 Flash Hazır"}
+                {aiTask?.active ? aiTask.taskName : (health?.primary_model ? `${health.primary_model} (Auto-Fallback)` : "Gemini Auto-Fallback")}
               </p>
             </div>
           </div>
@@ -869,7 +876,7 @@ export default function PulseGuardDashboard() {
               <div className="flex items-center gap-1.5">
                 <span className="text-slate-400">AI Modu:</span>
                 <span className="font-bold font-mono text-cyan-400">
-                  {health?.ai_mode === "live_gemini" ? "Live Gemini API" : "Fallback Ready"}
+                  {health?.ai_mode === "live_gemini" ? "Live Gemini (Multi-Model)" : "Fallback Ready"}
                 </span>
               </div>
             </div>
@@ -983,7 +990,7 @@ export default function PulseGuardDashboard() {
                         </span>
                       )}
                       <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800">
-                        Mod: {stormSummary.ai_mode === "live_gemini" ? "Live Gemini API" : "Resilient AI"}
+                        Mod: {stormSummary.ai_mode === "live_gemini" ? (stormSummary.ai_model ? `Live Gemini (${stormSummary.ai_model})` : "Live Gemini") : "Resilient AI"}
                       </span>
                     </div>
                     <p className="text-xs text-slate-300 leading-relaxed">
@@ -1307,7 +1314,7 @@ export default function PulseGuardDashboard() {
                           >
                             AI Engine:{" "}
                             {selectedIncident.ai_triage_pass.mode === "live_gemini"
-                              ? "Live Gemini API"
+                              ? `Live Gemini (${selectedIncident.ai_triage_pass.model || "Active"})`
                               : "Resilient Fallback"}
                           </span>
                         )}
@@ -1510,7 +1517,9 @@ export default function PulseGuardDashboard() {
 
                             {broadcastAiMode && (
                               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30">
-                                {broadcastAiMode === "live_gemini" ? "Live Gemini" : "AI Draft"}
+                                {broadcastAiMode === "live_gemini"
+                                  ? `Live Gemini (${broadcastDraftModel || selectedIncident?.ai_triage_pass?.model || "Active"})`
+                                  : "AI Draft"}
                               </span>
                             )}
                           </div>
@@ -1727,7 +1736,7 @@ export default function PulseGuardDashboard() {
                           <div className="flex items-center gap-2">
                             <span className="px-2 py-0.5 text-[10px] font-mono rounded bg-blue-500/15 text-blue-300 border border-blue-500/30">
                               {selectedIncident.ai_triage_pass?.postmortem_mode === "live_gemini"
-                                ? "Synthesized by Live Gemini API"
+                                ? `Synthesized by Live Gemini (${selectedIncident.ai_triage_pass?.postmortem_model || selectedIncident.ai_triage_pass?.model || "Active"})`
                                 : "AI Post-Mortem Engine"}
                             </span>
                             <span

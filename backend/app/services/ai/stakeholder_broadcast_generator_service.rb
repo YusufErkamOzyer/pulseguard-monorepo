@@ -7,11 +7,7 @@ require "uri"
 module Ai
   class StakeholderBroadcastGeneratorService
     def self.gemini_model
-      ENV.fetch("GEMINI_MODEL", "gemini-3.8-flash")
-    end
-
-    def self.gemini_api_url
-      "https://generativelanguage.googleapis.com/v1beta/models/#{gemini_model}:generateContent"
+      Ai::GeminiClient.primary_model
     end
 
     def self.call(incident_arg = nil, incident: nil, tone: "empathetic", status_type: nil)
@@ -58,7 +54,7 @@ module Ai
     end
 
     def service_name
-      @incident.service&.name || "Cisco Cloud Service"
+      @incident.service&.name || "Cisco Core Service"
     end
 
     def service_slug
@@ -66,10 +62,6 @@ module Ai
     end
 
     def call_gemini
-      uri = URI("#{self.class.gemini_api_url}?key=#{@api_key}")
-      request = Net::HTTP::Post.new(uri)
-      request["Content-Type"] = "application/json"
-
       st_type = effective_status_type
 
       prompt = <<~PROMPT
@@ -103,35 +95,16 @@ module Ai
         }
       PROMPT
 
-      request.body = {
-        contents: [
-          {
-            parts: [
-              { text: prompt }
-            ]
-          }
-        ],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
-      }.to_json
-
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
-      http.open_timeout = 15
-      http.read_timeout = ENV.fetch("GEMINI_READ_TIMEOUT", "100").to_i
-
-      response = http.request(request)
-      return nil unless response.is_a?(Net::HTTPSuccess)
-
-      parsed_body = JSON.parse(response.body)
-      candidate_parts = parsed_body.dig("candidates", 0, "content", "parts") || []
-      text_part = candidate_parts.find { |p| p["text"].present? && !p["thought"] } || candidate_parts.first
-      text = text_part&.dig("text")
-      return nil if text.blank?
+      res = Ai::GeminiClient.generate_content(
+        prompt: prompt,
+        json_mode: true,
+        read_timeout: ENV.fetch("GEMINI_READ_TIMEOUT", "100").to_i,
+        api_key: @api_key
+      )
+      return nil unless res[:success] && res[:text].present?
 
       # Sanitize markdown code fences
-      clean_json = text.strip
+      clean_json = res[:text].strip
       clean_json = clean_json.gsub(/\A```(?:json)?\s*/i, "").gsub(/\s*```\z/i, "").strip
       json_match = clean_json.match(/\{[\s\S]*\}/)
       clean_json = json_match[0] if json_match
@@ -147,7 +120,7 @@ module Ai
         "service_id" => @incident.service_id,
         "service_name" => service_name,
         "mode" => "live_gemini",
-        "model" => self.class.gemini_model,
+        "model" => res[:model],
         "generated_at" => Time.current.iso8601
       }
     rescue StandardError => e

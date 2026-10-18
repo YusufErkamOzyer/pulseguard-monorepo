@@ -7,11 +7,7 @@ require "uri"
 module Ai
   class PostmortemGeneratorService
     def self.gemini_model
-      ENV.fetch("GEMINI_MODEL", "gemini-3.8-flash")
-    end
-
-    def self.gemini_api_url
-      "https://generativelanguage.googleapis.com/v1beta/models/#{gemini_model}:generateContent"
+      Ai::GeminiClient.primary_model
     end
 
     def self.call(incident)
@@ -38,10 +34,6 @@ module Ai
     private
 
     def call_gemini
-      uri = URI("#{self.class.gemini_api_url}?key=#{@api_key}")
-      request = Net::HTTP::Post.new(uri)
-      request["Content-Type"] = "application/json"
-
       pass = @incident.ai_triage_pass || {}
       svc_name = @incident.service&.name || "Cisco Cloud Service"
       runbook_cmd = pass["suggested_runbook_command"] || "kubectl rollout restart deployment/cisco-service"
@@ -75,34 +67,15 @@ module Ai
         }
       PROMPT
 
-      request.body = {
-        contents: [
-          {
-            parts: [
-              { text: prompt }
-            ]
-          }
-        ],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
-      }.to_json
+      res = Ai::GeminiClient.generate_content(
+        prompt: prompt,
+        json_mode: true,
+        read_timeout: ENV.fetch("GEMINI_READ_TIMEOUT", "60").to_i,
+        api_key: @api_key
+      )
+      return nil unless res[:success] && res[:text].present?
 
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
-      http.open_timeout = 15
-      http.read_timeout = ENV.fetch("GEMINI_READ_TIMEOUT", "60").to_i
-
-      response = http.request(request)
-      return nil unless response.is_a?(Net::HTTPSuccess)
-
-      parsed_body = JSON.parse(response.body)
-      candidate_parts = parsed_body.dig("candidates", 0, "content", "parts") || []
-      text_part = candidate_parts.find { |p| p["text"].present? && !p["thought"] } || candidate_parts.first
-      text = text_part&.dig("text")
-      return nil if text.blank?
-
-      clean_json = text.strip.gsub(/\A```(?:json)?\s*/i, "").gsub(/\s*```\z/i, "").strip
+      clean_json = res[:text].strip.gsub(/\A```(?:json)?\s*/i, "").gsub(/\s*```\z/i, "").strip
       json_match = clean_json.match(/\{[\s\S]*\}/)
       clean_json = json_match[0] if json_match
 
@@ -123,7 +96,7 @@ module Ai
         "impact_metrics" => (parsed["impact_metrics"].presence || deterministic_postmortem["impact_metrics"]).to_s.strip,
         "action_items" => items,
         "mode" => "live_gemini",
-        "model" => self.class.gemini_model,
+        "model" => res[:model],
         "generated_at" => Time.current.iso8601
       }
     rescue StandardError => e

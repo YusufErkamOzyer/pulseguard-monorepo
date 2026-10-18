@@ -45,8 +45,9 @@ module Aiops
         noise_ratio = total_burst.positive? ? (suppressed_count.to_f / total_burst).round(3) : 0.0
         noise_pct = total_burst.positive? ? ((suppressed_count.to_f / total_burst) * 100).round(1) : 0.0
 
+        actor_label = triage_info["mode"] == "live_gemini" ? (triage_info["model"] || "Live Gemini") : "AI Engine"
         incident.incident_events.create!(
-          actor: "PulseGuard AIOps Engine (#{triage_info['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
+          actor: "PulseGuard AIOps Engine (#{actor_label})",
           action_type: "aiops_alert_storm",
           detail: "⚡ #{total_burst} ham log akışı tarandı. AI arızalı servisin '#{detected_service.name}' olduğunu tespit etti (#{grouped_count} kök sinyal gruplandı, #{suppressed_count} gürültü bastırıldı — %#{noise_pct})."
         )
@@ -64,7 +65,8 @@ module Aiops
             detected_service_name: detected_service.name,
             detected_service_slug: detected_service.slug,
             detection_reasoning: triage_info["detection_reasoning"],
-            ai_mode: triage_info["mode"]
+            ai_mode: triage_info["mode"],
+            ai_model: triage_info["model"]
           },
           alerts: created_alerts
         }
@@ -169,8 +171,9 @@ module Aiops
       pass["log_triage_mode"] = triage_info["mode"]
       new_incident.update!(ai_triage_pass: pass)
 
+      pass_actor_label = pass["mode"] == "live_gemini" ? (pass["model"] || "Live Gemini") : "AI Engine"
       new_incident.incident_events.create!(
-        actor: "PulseGuard AI Triage (#{pass['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
+        actor: "PulseGuard AI Triage (#{pass_actor_label})",
         action_type: "ai_analyzed",
         detail: "🤖 AI hatayı yorumladı, çözüm komutunu hazırladı ve nöbetçi mühendise (#{pass['recommended_assignee']}) bildirim gönderdi."
       )
