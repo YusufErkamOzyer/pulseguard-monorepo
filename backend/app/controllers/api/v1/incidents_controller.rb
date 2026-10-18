@@ -1,7 +1,7 @@
 module Api
   module V1
     class IncidentsController < ApplicationController
-      before_action :set_incident, only: [:show, :transition, :apply_ai_pass, :generate_postmortem]
+      before_action :set_incident, only: [:show, :transition, :apply_ai_pass, :generate_postmortem, :draft_broadcast, :publish_broadcast]
 
       def index
         incidents = Incident.includes(:service, :postmortem).order(created_at: :desc)
@@ -150,6 +150,68 @@ module Api
         }
       rescue StandardError => e
         render json: { error: e.message }, status: :unprocessable_entity
+      end
+
+      def draft_broadcast
+        tone = params[:tone].presence || "empathetic"
+        status_type = params[:status_type].presence
+
+        draft = Ai::StakeholderBroadcastGeneratorService.call(
+          incident: @incident,
+          tone: tone,
+          status_type: status_type
+        )
+
+        render json: {
+          draft: draft,
+          success: true
+        }
+      rescue StandardError => e
+        render json: { error: e.message, success: false }, status: :unprocessable_entity
+      end
+
+      def publish_broadcast
+        su_params = params[:status_update].presence || params
+        title = su_params[:title].presence
+        body = su_params[:body].presence
+        status_type = su_params[:status_type].presence || "investigating"
+        published_by = su_params[:published_by].presence || @incident.assigned_to.presence || "PulseGuard AI Broadcast"
+
+        if title.blank? || body.blank?
+          return render json: { error: "Title and body are required to publish a broadcast.", success: false }, status: :unprocessable_entity
+        end
+
+        unless StatusUpdate::STATUS_TYPES.include?(status_type)
+          return render json: { error: "Invalid status_type. Allowed: #{StatusUpdate::STATUS_TYPES.join(', ')}", success: false }, status: :unprocessable_entity
+        end
+
+        status_update = nil
+        ActiveRecord::Base.transaction do
+          status_update = @incident.status_updates.create!(
+            service: @incident.service,
+            title: title,
+            body: body,
+            status_type: status_type,
+            published_by: published_by,
+            published_at: Time.current
+          )
+
+          @incident.incident_events.create!(
+            actor: published_by,
+            action_type: "broadcast_published",
+            detail: "📢 Published customer status broadcast: '#{title}' (#{status_type.upcase}) to status.cisco.com"
+          )
+        end
+
+        render json: {
+          status_update: status_update.as_json,
+          incident: incident_payload(@incident.reload, include_events: true),
+          success: true
+        }, status: :created
+      rescue ActiveRecord::RecordInvalid => e
+        render json: { error: e.record.errors.full_messages, success: false }, status: :unprocessable_entity
+      rescue StandardError => e
+        render json: { error: e.message, success: false }, status: :unprocessable_entity
       end
 
       private
