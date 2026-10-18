@@ -5,6 +5,8 @@ class Incident < ApplicationRecord
   belongs_to :service
   has_many :incident_events, -> { order(created_at: :asc) }, dependent: :destroy
   has_one :postmortem, dependent: :destroy
+  has_many :alerts, dependent: :nullify
+  has_many :status_updates, dependent: :nullify
 
   validates :title, presence: true
   validates :severity, inclusion: { in: SEVERITIES }
@@ -44,7 +46,7 @@ class Incident < ApplicationRecord
         action_type: "resolved",
         detail: "Incident verified and resolved by #{responder_name}."
       )
-      service&.recalculate_status!
+      service&.recalculate_status!(self)
     end
   end
 
@@ -95,5 +97,13 @@ class Incident < ApplicationRecord
     end
 
     reload
+  end
+
+  def grouped_alerts
+    alerts.where(status: "grouped")
+  end
+
+  def suppressed_alerts
+    alerts.where(status: "suppressed_noise")
   end
 end

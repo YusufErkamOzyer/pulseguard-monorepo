@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { PostmortemRecord, generatePostmortem, ActionItem } from "@/lib/api";
-import { BookOpen, CheckCircle, Clock, FileText, Send, X, CheckSquare, Square } from "lucide-react";
+import { BookOpen, Send, X, CheckSquare, Square } from "lucide-react";
 
 interface PostmortemModalProps {
   isOpen: boolean;
@@ -17,25 +17,34 @@ export function PostmortemModal({
   postmortem,
   onPostmortemUpdated,
 }: PostmortemModalProps) {
-  const [summary, setSummary] = useState(postmortem?.summary || "");
-  const [rootCause, setRootCause] = useState(postmortem?.root_cause || "");
-  const [impactMetrics, setImpactMetrics] = useState(postmortem?.impact_metrics || "");
+  if (!isOpen || !postmortem) return null;
+
+  return (
+    <PostmortemModalContent
+      key={postmortem.id}
+      onClose={onClose}
+      postmortem={postmortem}
+      onPostmortemUpdated={onPostmortemUpdated}
+    />
+  );
+}
+
+function PostmortemModalContent({
+  onClose,
+  postmortem,
+  onPostmortemUpdated,
+}: {
+  onClose: () => void;
+  postmortem: PostmortemRecord;
+  onPostmortemUpdated?: (updated: PostmortemRecord) => void;
+}) {
+  const [summary, setSummary] = useState(postmortem.summary || "");
+  const [rootCause, setRootCause] = useState(postmortem.root_cause || "");
+  const [impactMetrics, setImpactMetrics] = useState(postmortem.impact_metrics || "");
   const [actionItems, setActionItems] = useState<ActionItem[]>(
-    postmortem?.action_items || []
+    postmortem.action_items || []
   );
   const [isPublishing, setIsPublishing] = useState(false);
-
-  // Sync state when postmortem prop changes
-  React.useEffect(() => {
-    if (postmortem) {
-      setSummary(postmortem.summary || "");
-      setRootCause(postmortem.root_cause || "");
-      setImpactMetrics(postmortem.impact_metrics || "");
-      setActionItems(postmortem.action_items || []);
-    }
-  }, [postmortem]);
-
-  if (!isOpen || !postmortem) return null;
 
   const toggleActionItem = (index: number) => {
     const updated = [...actionItems];

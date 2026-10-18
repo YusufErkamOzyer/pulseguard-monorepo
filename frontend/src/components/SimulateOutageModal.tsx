@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { AlertOctagon, X, Zap, Server, ShieldAlert } from "lucide-react";
+import { AlertOctagon, X, Zap } from "lucide-react";
 import { ServiceRecord, createIncident } from "@/lib/api";
 
 interface SimulateOutageModalProps {

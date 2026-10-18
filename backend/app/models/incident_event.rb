@@ -1,5 +1,14 @@
 class IncidentEvent < ApplicationRecord
-  ACTION_TYPES = %w[triggered ai_analyzed acknowledged escalated runbook_executed resolved].freeze
+  ACTION_TYPES = %w[
+    triggered
+    ai_analyzed
+    acknowledged
+    escalated
+    runbook_executed
+    resolved
+    aiops_alert_storm
+    broadcast_published
+  ].freeze
 
   belongs_to :incident
 

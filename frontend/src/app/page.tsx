@@ -7,31 +7,24 @@ import {
   AlertTriangle,
   Award,
   CheckCircle2,
-  ChevronRight,
   Clock,
   Copy,
   ExternalLink,
   Flame,
   Layers,
-  Play,
   RefreshCw,
-  Server,
-  Shield,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
   Terminal,
   User,
-  Users,
   Zap,
   BookOpen,
   DollarSign,
   TrendingDown,
-  ArrowUpRight,
-  RotateCcw,
+  Megaphone,
 } from "lucide-react";
 import {
-  API_BASE_URL,
   HealthResponse,
   DashboardResponse,
   ServiceRecord,
@@ -50,6 +43,10 @@ import {
 import { SimulateOutageModal } from "@/components/SimulateOutageModal";
 import { ProofModal } from "@/components/ProofModal";
 import { PostmortemModal } from "@/components/PostmortemModal";
+import { CorrelatedAlertsCard } from "@/components/CorrelatedAlertsCard";
+import { StakeholderBroadcastModal } from "@/components/StakeholderBroadcastModal";
+import { AiopsAlertStreamTab } from "@/components/tabs/AiopsAlertStreamTab";
+import { PublicStatusPageTab } from "@/components/tabs/PublicStatusPageTab";
 
 const PERSONAS = [
   "Alex Rivera (Principal SRE)",
@@ -59,7 +56,7 @@ const PERSONAS = [
 
 export default function PulseGuardDashboard() {
   // Navigation & Personas
-  const [activeTab, setActiveTab] = useState<"command" | "services" | "postmortem">("command");
+  const [activeTab, setActiveTab] = useState<"command" | "aiops" | "status" | "postmortem">("command");
   const [selectedPersona, setSelectedPersona] = useState<string>(PERSONAS[0]);
 
   // Telemetry & Health
@@ -79,8 +76,6 @@ export default function PulseGuardDashboard() {
 
   // Services Tab State
   const [services, setServices] = useState<ServiceRecord[]>([]);
-  const [serviceUpdateLoading, setServiceUpdateLoading] = useState<number | null>(null);
-
   // Postmortems Tab State
   const [postmortems, setPostmortems] = useState<PostmortemRecord[]>([]);
   const [selectedPostmortem, setSelectedPostmortem] = useState<PostmortemRecord | null>(null);
@@ -93,6 +88,7 @@ export default function PulseGuardDashboard() {
   // Modals
   const [isOutageModalOpen, setIsOutageModalOpen] = useState<boolean>(false);
   const [isProofModalOpen, setIsProofModalOpen] = useState<boolean>(false);
+  const [isBroadcastModalOpen, setIsBroadcastModalOpen] = useState<boolean>(false);
   const [drillServiceId, setDrillServiceId] = useState<number | undefined>(undefined);
 
   // --- Initial Data Load ---
@@ -131,8 +127,42 @@ export default function PulseGuardDashboard() {
   }, [statusFilter, selectedIncidentId]);
 
   useEffect(() => {
-    loadAllData();
-  }, [loadAllData]);
+    let ignore = false;
+    Promise.all([
+      fetchHealth(),
+      fetchDashboard(),
+      fetchServices(),
+      fetchIncidents(statusFilter),
+      fetchPostmortems(),
+    ]).then(([hRes, dRes, sRes, iRes, pmRes]) => {
+      if (!ignore) {
+        if (hRes.data) {
+          setHealth(hRes.data);
+          setApiLatency(hRes.latencyMs);
+        }
+        if (dRes.data) {
+          setDashboardData(dRes.data);
+          if (dRes.data.services) setServices(dRes.data.services);
+        }
+        if (sRes.data) {
+          setServices(sRes.data.services);
+        }
+        if (iRes.data) {
+          setIncidents(iRes.data.incidents);
+          if (!selectedIncidentId && iRes.data.incidents.length > 0) {
+            setSelectedIncidentId(iRes.data.incidents[0].id);
+          }
+        }
+        if (pmRes.data) {
+          setPostmortems(pmRes.data.postmortems);
+        }
+        setIsLoading(false);
+      }
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [statusFilter, selectedIncidentId]);
 
   // Load single incident details when selectedIncidentId changes
   useEffect(() => {
@@ -165,18 +195,29 @@ export default function PulseGuardDashboard() {
     if (res.data?.success && res.data.incident) {
       setSelectedIncident(res.data.incident);
       setPassSuccessMessage(
-        "⚡ 1-Click Remediation executed successfully! Runbook completed, state set to resolved, and postmortem drafted."
+        "⚡ 1-Click Remediation executed successfully! Runbook completed, service restored to operational, and automated recovery broadcast published to status.cisco.com."
       );
-      // Refresh dashboard KPIs and queue
-      const [dRes, iRes, pmRes] = await Promise.all([
+      // Refresh dashboard KPIs, incidents, services, and postmortems
+      const [dRes, iRes, sRes, pmRes] = await Promise.all([
         fetchDashboard(),
         fetchIncidents(statusFilter),
+        fetchServices(),
         fetchPostmortems(),
       ]);
       if (dRes.data) setDashboardData(dRes.data);
       if (iRes.data) setIncidents(iRes.data.incidents);
+      if (sRes.data) setServices(sRes.data.services);
       if (pmRes.data) setPostmortems(pmRes.data.postmortems);
     }
+  };
+
+  const handleBroadcastPublished = () => {
+    if (selectedIncidentId) {
+      fetchIncident(selectedIncidentId).then((res) => {
+        if (res.data?.incident) setSelectedIncident(res.data.incident);
+      });
+    }
+    loadAllData();
   };
 
   const handleTransition = async (event: "acknowledge" | "resolve") => {
@@ -194,9 +235,7 @@ export default function PulseGuardDashboard() {
   };
 
   const handleUpdateServiceOnCall = async (serviceId: number, newEngineer: string) => {
-    setServiceUpdateLoading(serviceId);
     const res = await updateService(serviceId, { on_call_engineer: newEngineer });
-    setServiceUpdateLoading(null);
     if (res.data?.success) {
       setServices((prev) =>
         prev.map((s) => (s.id === serviceId ? { ...s, on_call_engineer: newEngineer } : s))
@@ -210,7 +249,7 @@ export default function PulseGuardDashboard() {
     setTimeout(() => setCopiedCommand(false), 2000);
   };
 
-  const handleOpenDrill = (serviceId: number) => {
+  const handleOpenDrill = (serviceId?: number) => {
     setDrillServiceId(serviceId);
     setIsOutageModalOpen(true);
   };
@@ -415,6 +454,7 @@ export default function PulseGuardDashboard() {
       {/* Main Navigation Tabs */}
       <div className="bg-slate-950 border-b border-slate-800 px-6">
         <div className="max-w-7xl mx-auto flex items-center gap-1">
+          {/* Tab 1: Incident Command Center */}
           <button
             onClick={() => setActiveTab("command")}
             className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition cursor-pointer ${
@@ -424,7 +464,7 @@ export default function PulseGuardDashboard() {
             }`}
           >
             <ShieldAlert className="w-4 h-4" />
-            Incident Command Center
+            <span>Incident Command Center</span>
             {dashboardData?.kpis.active_incidents_count ? (
               <span className="px-1.5 py-0.2 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-full text-[10px]">
                 {dashboardData.kpis.active_incidents_count}
@@ -432,21 +472,40 @@ export default function PulseGuardDashboard() {
             ) : null}
           </button>
 
+          {/* Tab 2: AIOps & Alert Stream */}
           <button
-            onClick={() => setActiveTab("services")}
+            onClick={() => setActiveTab("aiops")}
             className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition cursor-pointer ${
-              activeTab === "services"
+              activeTab === "aiops"
                 ? "border-emerald-500 text-emerald-400 bg-emerald-500/5"
                 : "border-transparent text-slate-400 hover:text-slate-200"
             }`}
           >
-            <Server className="w-4 h-4" />
-            Cisco Services &amp; On-Call Matrix
-            <span className="px-1.5 py-0.2 bg-slate-800 text-slate-300 rounded text-[10px]">
-              {services.length}
+            <Layers className="w-4 h-4" />
+            <span>AIOps &amp; Alert Stream</span>
+            <span className="px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded text-[10px] font-mono">
+              &gt;90% Noise Red.
             </span>
           </button>
 
+          {/* Tab 3: Public Status Page */}
+          <button
+            onClick={() => setActiveTab("status")}
+            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition cursor-pointer ${
+              activeTab === "status"
+                ? "border-emerald-500 text-emerald-400 bg-emerald-500/5"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            <span>Public Status Page (status.cisco.com)</span>
+            <span className="flex items-center gap-1 px-1.5 py-0.2 bg-blue-500/10 text-blue-400 border border-blue-500/30 rounded text-[10px]">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Live
+            </span>
+          </button>
+
+          {/* Tab 4: Post-Mortems & ROI Hub */}
           <button
             onClick={() => setActiveTab("postmortem")}
             className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition cursor-pointer ${
@@ -456,7 +515,7 @@ export default function PulseGuardDashboard() {
             }`}
           >
             <BookOpen className="w-4 h-4" />
-            Post-Mortems &amp; Unit Economics
+            <span>Post-Mortems &amp; ROI Hub</span>
             <span className="px-1.5 py-0.2 bg-blue-500/20 text-blue-400 rounded text-[10px]">
               ROI ~96%
             </span>
@@ -481,7 +540,10 @@ export default function PulseGuardDashboard() {
                   </span>
                   <button
                     onClick={loadAllData}
-                    className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition"
+                    disabled={isLoading}
+                    className={`p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition ${
+                      isLoading ? "animate-spin opacity-50" : ""
+                    }`}
                     title="Refresh Incidents"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
@@ -695,9 +757,18 @@ export default function PulseGuardDashboard() {
                       </div>
 
                       {/* Draft Status Update */}
-                      <div className="mb-4 text-xs text-slate-400">
-                        <span className="font-semibold text-slate-300">Draft Status Update: </span>
-                        &ldquo;{selectedIncident.ai_triage_pass.draft_status_update}&rdquo;
+                      <div className="mb-4 flex items-center justify-between text-xs text-slate-400">
+                        <div className="truncate">
+                          <span className="font-semibold text-slate-300">Draft Status Update: </span>
+                          &ldquo;{selectedIncident.ai_triage_pass.draft_status_update}&rdquo;
+                        </div>
+                        <button
+                          onClick={() => setIsBroadcastModalOpen(true)}
+                          className="ml-3 shrink-0 flex items-center gap-1 text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
+                        >
+                          <Megaphone className="w-3 h-3" />
+                          <span>Broadcast to status.cisco.com</span>
+                        </button>
                       </div>
 
                       {/* Success Feedback Alert */}
@@ -749,6 +820,15 @@ export default function PulseGuardDashboard() {
                       <strong className="text-slate-200">{selectedPersona}</strong>):
                     </div>
                     <div className="flex items-center gap-2">
+                      {/* Customer Status Broadcast Button */}
+                      <button
+                        onClick={() => setIsBroadcastModalOpen(true)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600/20 to-teal-600/20 hover:from-emerald-600/30 hover:to-teal-600/30 border border-emerald-500/30 text-emerald-300 text-xs font-semibold rounded-lg transition cursor-pointer"
+                      >
+                        <Megaphone className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>📢 Draft AI Broadcast</span>
+                      </button>
+
                       {selectedIncident.status === "triggered" && (
                         <button
                           onClick={() => handleTransition("acknowledge")}
@@ -791,6 +871,16 @@ export default function PulseGuardDashboard() {
                       </pre>
                     </div>
                   )}
+
+                  {/* Correlated Child Alerts (AIOps Telemetry Clustering) */}
+                  <CorrelatedAlertsCard
+                    incidentId={selectedIncident.id}
+                    incidentTitle={selectedIncident.title}
+                    serviceName={selectedIncident.service?.name}
+                    serviceSlug={selectedIncident.service?.slug}
+                    isResolved={selectedIncident.status === "resolved"}
+                    onAlertsUpdated={loadAllData}
+                  />
 
                   {/* Live Audit Timeline */}
                   <div>
@@ -841,127 +931,35 @@ export default function PulseGuardDashboard() {
         )}
 
         {/* ========================================================================= */}
-        {/* TAB 2: SERVICES & ON-CALL MATRIX */}
+        {/* TAB 2: AIOPS & ALERT STREAM */}
         {/* ========================================================================= */}
-        {activeTab === "services" && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-white">
-                  Cisco Cloud Monitored Services &amp; On-Call Escalation Matrix
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Real-time health monitoring and dynamic on-call engineer reassignment.
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  setDrillServiceId(undefined);
-                  setIsOutageModalOpen(true);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg shadow transition cursor-pointer"
-              >
-                <Flame className="w-3.5 h-3.5" />
-                Simulate Chaos Drill
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {services.map((svc) => (
-                <div
-                  key={svc.id}
-                  className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 flex flex-col justify-between"
-                >
-                  <div>
-                    {/* Header: Name + Status */}
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                        {svc.tier}
-                      </span>
-                      <span
-                        className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold uppercase ${
-                          svc.status === "healthy"
-                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
-                            : svc.status === "degraded"
-                            ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
-                            : "bg-rose-500/10 text-rose-400 border border-rose-500/30"
-                        }`}
-                      >
-                        <span
-                          className={`h-2 w-2 rounded-full ${
-                            svc.status === "healthy"
-                              ? "bg-emerald-400"
-                              : svc.status === "degraded"
-                              ? "bg-amber-400 animate-pulse"
-                              : "bg-rose-500 animate-pulse"
-                          }`}
-                        />
-                        {svc.status}
-                      </span>
-                    </div>
-
-                    <h3 className="text-sm font-bold text-white mb-1.5">{svc.name}</h3>
-                    <div className="text-[11px] font-mono text-slate-500 mb-4">{svc.slug}</div>
-
-                    {/* Escalation Policy */}
-                    <div className="mb-4 p-2.5 bg-slate-950 border border-slate-800/80 rounded-lg text-xs">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">
-                        Escalation Policy
-                      </span>
-                      <span className="text-slate-300 font-mono text-[11px]">
-                        {svc.escalation_policy || "Standard Tier 1 Escalation"}
-                      </span>
-                    </div>
-
-                    {/* On-Call Reassignment Dropdown */}
-                    <div className="mb-4">
-                      <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1">
-                        Current On-Call Lead
-                      </label>
-                      <select
-                        value={svc.on_call_engineer}
-                        onChange={(e) => handleUpdateServiceOnCall(svc.id, e.target.value)}
-                        disabled={serviceUpdateLoading === svc.id}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
-                      >
-                        {PERSONAS.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Card Actions */}
-                  <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                    <span className="text-slate-400">
-                      Active:{" "}
-                      <strong
-                        className={
-                          (svc.active_incidents_count || 0) > 0
-                            ? "text-rose-400 font-bold"
-                            : "text-slate-300"
-                        }
-                      >
-                        {svc.active_incidents_count || 0}
-                      </strong>
-                    </span>
-                    <button
-                      onClick={() => handleOpenDrill(svc.id)}
-                      className="px-2.5 py-1 text-[11px] text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded border border-rose-500/30 transition"
-                    >
-                      Trigger Drill
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+        {activeTab === "aiops" && (
+          <AiopsAlertStreamTab
+            services={services}
+            onSelectIncident={(incidentId) => {
+              setSelectedIncidentId(incidentId);
+              setActiveTab("command");
+            }}
+          />
         )}
 
         {/* ========================================================================= */}
-        {/* TAB 3: POST-MORTEMS & UNIT ECONOMICS HUB */}
+        {/* TAB 3: PUBLIC STATUS PAGE (status.cisco.com) */}
+        {/* ========================================================================= */}
+        {activeTab === "status" && (
+          <PublicStatusPageTab
+            services={services}
+            onUpdateServiceOnCall={handleUpdateServiceOnCall}
+            onOpenChaosDrill={handleOpenDrill}
+            onViewIncident={(incidentId) => {
+              setSelectedIncidentId(incidentId);
+              setActiveTab("command");
+            }}
+          />
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 4: POST-MORTEMS & UNIT ECONOMICS HUB */}
         {/* ========================================================================= */}
         {activeTab === "postmortem" && (
           <div className="space-y-8">
@@ -1192,6 +1190,14 @@ export default function PulseGuardDashboard() {
             prev.map((pm) => (pm.id === updated.id ? updated : pm))
           );
         }}
+      />
+
+      <StakeholderBroadcastModal
+        isOpen={isBroadcastModalOpen}
+        onClose={() => setIsBroadcastModalOpen(false)}
+        incident={selectedIncident}
+        currentPersona={selectedPersona}
+        onBroadcastPublished={handleBroadcastPublished}
       />
     </div>
   );

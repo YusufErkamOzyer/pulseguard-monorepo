@@ -10,9 +10,28 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_17_173200) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_18_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "alerts", force: :cascade do |t|
+    t.bigint "service_id", null: false
+    t.bigint "incident_id"
+    t.string "source", null: false
+    t.string "severity", default: "warning", null: false
+    t.text "message", null: false
+    t.string "fingerprint", null: false
+    t.string "status", default: "unprocessed", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_at"], name: "index_alerts_on_created_at"
+    t.index ["fingerprint"], name: "index_alerts_on_fingerprint"
+    t.index ["incident_id"], name: "index_alerts_on_incident_id"
+    t.index ["service_id", "status"], name: "index_alerts_on_service_id_and_status"
+    t.index ["service_id"], name: "index_alerts_on_service_id"
+    t.index ["status"], name: "index_alerts_on_status"
+  end
 
   create_table "incident_events", force: :cascade do |t|
     t.bigint "incident_id", null: false
@@ -66,6 +85,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_17_173200) do
     t.index ["slug"], name: "index_services_on_slug", unique: true
   end
 
+  create_table "status_updates", force: :cascade do |t|
+    t.bigint "service_id", null: false
+    t.bigint "incident_id"
+    t.string "title", null: false
+    t.text "body", null: false
+    t.string "status_type", default: "investigating", null: false
+    t.string "published_by", default: "PulseGuard AI Broadcast", null: false
+    t.datetime "published_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["incident_id"], name: "index_status_updates_on_incident_id"
+    t.index ["published_at"], name: "index_status_updates_on_published_at"
+    t.index ["service_id", "published_at"], name: "index_status_updates_on_service_id_and_published_at"
+    t.index ["service_id"], name: "index_status_updates_on_service_id"
+    t.index ["status_type"], name: "index_status_updates_on_status_type"
+  end
+
   create_table "system_logs", force: :cascade do |t|
     t.string "event_type"
     t.text "message"
@@ -74,7 +110,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_17_173200) do
     t.datetime "updated_at", null: false
   end
 
+  add_foreign_key "alerts", "incidents"
+  add_foreign_key "alerts", "services"
   add_foreign_key "incident_events", "incidents"
   add_foreign_key "incidents", "services"
   add_foreign_key "postmortems", "incidents"
+  add_foreign_key "status_updates", "incidents"
+  add_foreign_key "status_updates", "services"
 end
