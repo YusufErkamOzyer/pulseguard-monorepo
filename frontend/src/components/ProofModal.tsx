@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ExternalLink, ShieldCheck, CheckCircle2, TrendingUp, X, Award, FileCode } from "lucide-react";
+import { ExternalLink, CheckCircle2, X, Award, FileCode } from "lucide-react";
 
 interface ProofModalProps {
   isOpen: boolean;

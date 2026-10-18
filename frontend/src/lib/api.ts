@@ -71,7 +71,16 @@ export interface AiTriagePass {
 export interface IncidentEventRecord {
   id: number;
   actor: string;
-  action_type: "triggered" | "ai_analyzed" | "acknowledged" | "escalated" | "runbook_executed" | "resolved" | string;
+  action_type:
+    | "triggered"
+    | "ai_analyzed"
+    | "acknowledged"
+    | "escalated"
+    | "runbook_executed"
+    | "resolved"
+    | "broadcast_published"
+    | "aiops_alert_storm"
+    | string;
   detail: string;
   created_at: string;
 }
@@ -108,6 +117,146 @@ export interface DashboardResponse {
   services: ServiceRecord[];
   recent_incidents: IncidentRecord[];
   timestamp: string;
+}
+
+// --- Milestone 3: AIOps Alert Telemetry Models ---
+export interface AlertRecord {
+  id: number;
+  service_id: number;
+  service_name?: string;
+  incident_id: number | null;
+  source: string; // "Cisco Catalyst Center" | "Datadog" | "ThousandEyes" | "AWS CloudWatch" | "Kubernetes Event"
+  severity: "critical" | "warning" | "info" | string;
+  status: "unprocessed" | "grouped" | "suppressed_noise" | string;
+  message: string;
+  fingerprint: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertFilters {
+  service_id?: number | string;
+  service_slug?: string;
+  incident_id?: number | string;
+  status?: "unprocessed" | "grouped" | "suppressed_noise" | "all" | string;
+  severity?: "critical" | "warning" | "info" | "all" | string;
+  source?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface AlertsResponse {
+  alerts: AlertRecord[];
+  total: number;
+  meta: {
+    total: number;
+    page: number;
+    per_page: number;
+    total_pages: number;
+  };
+}
+
+export interface NoiseMetrics {
+  total_alerts: number;
+  grouped_alerts: number;
+  suppressed_noise: number;
+  unprocessed_alerts: number;
+  consolidated_incidents: number;
+  noise_reduction_ratio: number;
+  noise_reduction_percentage: number;
+}
+
+export interface StormSummary {
+  raw_alerts_ingested: number;
+  suppressed_count: number;
+  grouped_count: number;
+  noise_reduction_ratio: number;
+  noise_reduction_percentage: number;
+}
+
+export interface SimulateStormResponse {
+  success: boolean;
+  incident: IncidentRecord;
+  storm_summary: StormSummary;
+  alerts: AlertRecord[];
+}
+
+// --- Milestone 3: Public Status Page & Stakeholder Broadcast Models ---
+export interface StatusUpdateRecord {
+  id: number;
+  service_id: number;
+  service_name?: string;
+  incident_id: number | null;
+  title: string;
+  body: string;
+  status_type: "investigating" | "identified" | "monitoring" | "resolved" | string;
+  published_by: string;
+  published_at: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface StatusPageService {
+  id: number;
+  name: string;
+  slug: string;
+  tier: string;
+  status: "healthy" | "degraded" | "outage" | string;
+  on_call_engineer: string;
+  escalation_policy: string;
+  active_incidents_count: number;
+  active_incidents: Array<{
+    id: number;
+    title: string;
+    severity: string;
+    status: string;
+    created_at: string;
+  }>;
+  uptime_90d: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StatusPageMetrics {
+  total_services: number;
+  healthy_services: number;
+  degraded_services: number;
+  outage_services: number;
+  overall_uptime_90d: number;
+}
+
+export interface StatusPageResponse {
+  global_status: "operational" | "degraded" | "outage" | string;
+  services: StatusPageService[];
+  recent_broadcasts: StatusUpdateRecord[];
+  metrics: StatusPageMetrics;
+  timestamp: string;
+}
+
+export interface StakeholderBroadcastDraft {
+  title: string;
+  body: string;
+  status_type: "investigating" | "identified" | "monitoring" | "resolved" | string;
+  tone: string;
+  service_id: number;
+  service_name: string;
+  mode: "live_gemini" | "deterministic_fallback" | string;
+  model?: string;
+  generated_at: string;
+}
+
+export interface DraftStakeholderBroadcastResponse {
+  draft: StakeholderBroadcastDraft;
+  success: boolean;
+  error?: string;
+}
+
+export interface PublishStakeholderBroadcastResponse {
+  status_update: StatusUpdateRecord;
+  incident: IncidentRecord;
+  success: boolean;
+  error?: string;
 }
 
 // --- API Client Functions ---
@@ -356,6 +505,287 @@ export async function generatePostmortem(
       data: null,
       latencyMs: Math.round(performance.now() - start),
       error: err instanceof Error ? err.message : "Failed to generate postmortem",
+    };
+  }
+}
+
+// --- Milestone 3 API Client Functions: Alerts & AIOps ---
+
+export async function fetchAlerts(
+  filters?: AlertFilters
+): Promise<ApiResponse<AlertsResponse>> {
+  const start = performance.now();
+  try {
+    const params = new URLSearchParams();
+    if (filters?.service_id && filters.service_id !== "all") {
+      params.append("service_id", String(filters.service_id));
+    }
+    if (filters?.service_slug && filters.service_slug !== "all") {
+      params.append("service_slug", filters.service_slug);
+    }
+    if (filters?.incident_id && filters.incident_id !== "all") {
+      params.append("incident_id", String(filters.incident_id));
+    }
+    if (filters?.status && filters.status !== "all") {
+      params.append("status", filters.status);
+    }
+    if (filters?.severity && filters.severity !== "all") {
+      params.append("severity", filters.severity);
+    }
+    if (filters?.source && filters.source !== "all") {
+      params.append("source", filters.source);
+    }
+    if (filters?.page) {
+      params.append("page", String(filters.page));
+    }
+    if (filters?.limit) {
+      params.append("limit", String(filters.limit));
+    }
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const res = await fetch(`${API_BASE_URL}/api/v1/alerts${query}`, { cache: "no-store" });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data: AlertsResponse = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to fetch alerts",
+    };
+  }
+}
+
+export async function fetchAlertMetrics(
+  filters?: { service_id?: number | string; service_slug?: string }
+): Promise<ApiResponse<NoiseMetrics>> {
+  const start = performance.now();
+  try {
+    const params = new URLSearchParams();
+    if (filters?.service_id && filters.service_id !== "all") {
+      params.append("service_id", String(filters.service_id));
+    }
+    if (filters?.service_slug && filters.service_slug !== "all") {
+      params.append("service_slug", filters.service_slug);
+    }
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const res = await fetch(`${API_BASE_URL}/api/v1/alerts/metrics${query}`, { cache: "no-store" });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data: NoiseMetrics = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to fetch alert metrics",
+    };
+  }
+}
+
+export async function simulateAlertStorm(
+  options?: {
+    service_slug?: string;
+    service_id?: number;
+    incident_id?: number;
+    burst_size?: number;
+  }
+): Promise<ApiResponse<SimulateStormResponse>> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/alerts/simulate_storm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options || {}),
+      cache: "no-store",
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data: SimulateStormResponse = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to simulate alert storm",
+    };
+  }
+}
+
+export async function createAlert(payload: {
+  service_id?: number;
+  service_slug?: string;
+  source: string;
+  severity?: "critical" | "warning" | "info" | string;
+  status?: "unprocessed" | "grouped" | "suppressed_noise" | string;
+  message: string;
+  fingerprint?: string;
+  metadata?: Record<string, unknown>;
+  incident_id?: number;
+}): Promise<ApiResponse<{ alert: AlertRecord; success: boolean }>> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/alerts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alert: payload }),
+      cache: "no-store",
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to create raw alert",
+    };
+  }
+}
+
+// --- Milestone 3 API Client Functions: Public Status Page & Broadcasts ---
+
+export async function fetchStatusPage(): Promise<ApiResponse<StatusPageResponse>> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/status_page`, { cache: "no-store" });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data: StatusPageResponse = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to fetch status page data",
+    };
+  }
+}
+
+export async function fetchStatusUpdates(filters?: {
+  service_id?: number | string;
+  incident_id?: number | string;
+  status_type?: string;
+  limit?: number;
+}): Promise<ApiResponse<{ status_updates: StatusUpdateRecord[]; total: number }>> {
+  const start = performance.now();
+  try {
+    const params = new URLSearchParams();
+    if (filters?.service_id && filters.service_id !== "all") {
+      params.append("service_id", String(filters.service_id));
+    }
+    if (filters?.incident_id && filters.incident_id !== "all") {
+      params.append("incident_id", String(filters.incident_id));
+    }
+    if (filters?.status_type && filters.status_type !== "all") {
+      params.append("status_type", filters.status_type);
+    }
+    if (filters?.limit) {
+      params.append("limit", String(filters.limit));
+    }
+
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const res = await fetch(`${API_BASE_URL}/api/v1/status_updates${query}`, { cache: "no-store" });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to fetch status updates",
+    };
+  }
+}
+
+export async function createStatusUpdate(payload: {
+  service_id: number;
+  incident_id?: number;
+  title: string;
+  body: string;
+  status_type?: "investigating" | "identified" | "monitoring" | "resolved" | string;
+  published_by?: string;
+  published_at?: string;
+}): Promise<ApiResponse<{ status_update: StatusUpdateRecord; success: boolean }>> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/status_updates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status_update: payload }),
+      cache: "no-store",
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to create status update",
+    };
+  }
+}
+
+export async function draftStakeholderBroadcast(
+  incidentId: number,
+  options?: { tone?: string; status_type?: string }
+): Promise<ApiResponse<DraftStakeholderBroadcastResponse>> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/incidents/${incidentId}/draft_broadcast`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tone: options?.tone || "empathetic",
+        status_type: options?.status_type,
+      }),
+      cache: "no-store",
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data: DraftStakeholderBroadcastResponse = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to draft stakeholder broadcast",
+    };
+  }
+}
+
+export async function publishStakeholderBroadcast(
+  incidentId: number,
+  payload: {
+    title: string;
+    body: string;
+    status_type: "investigating" | "identified" | "monitoring" | "resolved" | string;
+    published_by?: string;
+  }
+): Promise<ApiResponse<PublishStakeholderBroadcastResponse>> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/incidents/${incidentId}/publish_broadcast`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const data: PublishStakeholderBroadcastResponse = await res.json();
+    return { data, latencyMs, error: null };
+  } catch (err) {
+    return {
+      data: null,
+      latencyMs: Math.round(performance.now() - start),
+      error: err instanceof Error ? err.message : "Failed to publish stakeholder broadcast",
     };
   }
 }
