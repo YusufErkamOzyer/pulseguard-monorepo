@@ -18,17 +18,36 @@ class Incident < ApplicationRecord
 
   def acknowledge!(responder = nil)
     responder_name = responder.presence || assigned_to.presence || service&.on_call_engineer || "On-Call Engineer"
-    
+
     transaction do
       update!(
         status: "acknowledged",
         assigned_to: responder_name,
         acknowledged_at: acknowledged_at || Time.current
       )
+
       incident_events.create!(
         actor: responder_name,
         action_type: "acknowledged",
-        detail: "Incident acknowledged and assigned to #{responder_name}."
+        detail: "Vaka (case) #{responder_name} tarafından üstlenildi."
+      )
+
+      # Mühendis case'i aldıktan hemen sonra AI otomatik olarak Müşteri Bilgilendirme Raporu hazırlar
+      broadcast_draft = Ai::StakeholderBroadcastGeneratorService.call(
+        incident: self,
+        tone: "empathetic",
+        status_type: "identified"
+      )
+
+      current_pass = (ai_triage_pass || {}).dup
+      current_pass["customer_broadcast_draft"] = broadcast_draft
+      current_pass["draft_status_update"] = broadcast_draft["body"] if broadcast_draft["body"].present?
+      update!(ai_triage_pass: current_pass)
+
+      incident_events.create!(
+        actor: "PulseGuard AI Agent (#{broadcast_draft['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
+        action_type: "ai_analyzed",
+        detail: "📢 Mühendis vakayı aldığı için Müşteri Bilgilendirme Raporu otomatik hazırlandı ve mühendis onayına sunuldu. 1-Click Çözüm aktif."
       )
     end
   end
@@ -52,7 +71,7 @@ class Incident < ApplicationRecord
 
   def apply_ai_pass!(responder = nil)
     actor_name = responder.presence || assigned_to.presence || "PulseGuard AI Agent"
-    
+
     pass = ai_triage_pass.presence
     if pass.blank? || pass["suggested_runbook_command"].blank?
       pass = Ai::IncidentPassGeneratorService.call(self)
@@ -61,7 +80,7 @@ class Incident < ApplicationRecord
 
     transaction do
       runbook_cmd = pass["suggested_runbook_command"] || "kubectl rollout restart deployment/cisco-service"
-      
+
       # 1. Runbook execution audit
       incident_events.create!(
         actor: "PulseGuard AI Agent",
@@ -81,18 +100,26 @@ class Incident < ApplicationRecord
       # 3. Resolve incident
       resolve!(actor_name)
 
-      # 4. Auto-generate draft postmortem
+      # 4. Generate Post-Mortem report via real Gemini AI (with deterministic fallback)
+      ai_pm = Ai::PostmortemGeneratorService.call(self)
       pm = postmortem || build_postmortem
       pm.update!(
-        summary: "Automated triage & resolution for #{title}. Remediated in one click via PulseGuard AI pass.",
-        root_cause: pass["root_cause_hypothesis"] || "Root cause identified through signature analysis.",
-        impact_metrics: "Estimated #{pass['estimated_time_saved_minutes'] || 18} minutes MTTR saved. Service restored to healthy.",
-        action_items: [
-          { "task" => "Verify circuit breaker & connection pool limits on #{service.name}", "completed" => true },
-          { "task" => "Promote automated runbook to Cisco Catalyst Center auto-remediation rule", "completed" => false },
-          { "task" => "Update runbook signature database with matched incident #{pass['matched_historical_incident'] || 'INC-2026'}", "completed" => true }
-        ],
+        summary: ai_pm["summary"],
+        root_cause: ai_pm["root_cause"],
+        impact_metrics: ai_pm["impact_metrics"],
+        action_items: ai_pm["action_items"],
         published: false
+      )
+
+      updated_pass = (ai_triage_pass || {}).dup
+      updated_pass["postmortem_mode"] = ai_pm["mode"]
+      updated_pass["postmortem_model"] = ai_pm["model"]
+      update!(ai_triage_pass: updated_pass)
+
+      incident_events.create!(
+        actor: "PulseGuard AI Agent (#{ai_pm['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
+        action_type: "ai_analyzed",
+        detail: "📄 AI tarafından insan dilinde Blameless Post-Mortem raporu üretildi."
       )
     end
 

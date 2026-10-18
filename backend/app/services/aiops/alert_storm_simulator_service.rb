@@ -4,25 +4,39 @@ module Aiops
   class AlertStormSimulatorService
     DEFAULT_BURST_SIZE = 30
 
-    def self.call(service_slug: nil, service_id: nil, incident_id: nil, burst_size: DEFAULT_BURST_SIZE)
-      new(service_slug: service_slug, service_id: service_id, incident_id: incident_id, burst_size: burst_size).call
+    def self.call(service_slug: nil, service_id: nil, incident_id: nil, burst_size: DEFAULT_BURST_SIZE, create_fresh: false)
+      new(service_slug: service_slug, service_id: service_id, incident_id: incident_id, burst_size: burst_size, create_fresh: create_fresh).call
     end
 
-    def initialize(service_slug: nil, service_id: nil, incident_id: nil, burst_size: DEFAULT_BURST_SIZE)
+    def initialize(service_slug: nil, service_id: nil, incident_id: nil, burst_size: DEFAULT_BURST_SIZE, create_fresh: false)
       @service_slug = service_slug
       @service_id = service_id
       @incident_id = incident_id
       @burst_size = burst_size.to_i.positive? ? burst_size.to_i : DEFAULT_BURST_SIZE
+      @create_fresh = create_fresh
     end
 
     def call
-      service = resolve_service
-      raise ActiveRecord::RecordNotFound, "Target service not found" unless service
+      initial_service = resolve_service
+      raise ActiveRecord::RecordNotFound, "Target service not found" unless initial_service
 
       ActiveRecord::Base.transaction do
-        incident = resolve_or_create_incident(service)
+        raw_templates = prepare_alert_templates(initial_service)
 
-        created_alerts = generate_alert_burst(service, incident)
+        # AI analyzes the raw logs to detect which service has the root failure
+        triage_info = Ai::LogTriageService.call(
+          raw_alerts: raw_templates,
+          services: Service.all.to_a,
+          preferred_service: initial_service
+        )
+
+        detected_service = Service.find_by(slug: triage_info["detected_service_slug"]) || initial_service
+
+        incident = resolve_or_create_incident(detected_service, triage_info)
+
+        created_alerts = raw_templates.map do |attrs|
+          Alert.create!(attrs.merge(service: detected_service, incident: incident))
+        end
 
         grouped_count = created_alerts.count(&:grouped?)
         suppressed_count = created_alerts.count(&:suppressed?)
@@ -32,22 +46,25 @@ module Aiops
         noise_pct = total_burst.positive? ? ((suppressed_count.to_f / total_burst) * 100).round(1) : 0.0
 
         incident.incident_events.create!(
-          actor: "PulseGuard AIOps Engine",
+          actor: "PulseGuard AIOps Engine (#{triage_info['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
           action_type: "aiops_alert_storm",
-          detail: "⚡ AIOps Storm Simulator ingested #{total_burst} raw alerts for #{service.name}. " \
-                  "Correlated #{grouped_count} primary incident signals and suppressed #{suppressed_count} noise alerts (#{noise_pct}% noise reduction)."
+          detail: "⚡ #{total_burst} ham log akışı tarandı. AI arızalı servisin '#{detected_service.name}' olduğunu tespit etti (#{grouped_count} kök sinyal gruplandı, #{suppressed_count} gürültü bastırıldı — %#{noise_pct})."
         )
 
         {
           success: true,
-          service: service,
-          incident: incident,
+          service: detected_service,
+          incident: incident.reload,
           storm_summary: {
             raw_alerts_ingested: total_burst,
             suppressed_count: suppressed_count,
             grouped_count: grouped_count,
             noise_reduction_ratio: noise_ratio,
-            noise_reduction_percentage: noise_pct
+            noise_reduction_percentage: noise_pct,
+            detected_service_name: detected_service.name,
+            detected_service_slug: detected_service.slug,
+            detection_reasoning: triage_info["detection_reasoning"],
+            ai_mode: triage_info["mode"]
           },
           alerts: created_alerts
         }
@@ -59,27 +76,29 @@ module Aiops
     def resolve_service
       if @service_id.present?
         Service.find_by(id: @service_id)
-      elsif @service_slug.present?
+      elsif @service_slug.present? && @service_slug != "auto"
         Service.find_by(slug: @service_slug)
       else
-        Service.find_by(slug: "cisco-duo-auth") ||
-          Service.find_by(slug: "webex-media-router") ||
+        # Auto/random rotation across services when triggered in auto mode
+        Service.order(Arel.sql("RANDOM()")).first ||
+          Service.find_by(slug: "cisco-duo-auth") ||
           Service.first
       end
     end
 
-    def resolve_or_create_incident(service)
+    def resolve_or_create_incident(service, triage_info = {})
       if @incident_id.present?
         inc = service.incidents.find_by(id: @incident_id)
         return inc if inc
       end
 
-      # Reuse active incident if present
-      active_inc = service.incidents.active.order(created_at: :desc).first
-      return active_inc if active_inc
+      # Reuse active incident if present and not create_fresh
+      unless @create_fresh
+        active_inc = service.incidents.active.order(created_at: :desc).first
+        return active_inc if active_inc
+      end
 
-      # Otherwise create consolidated SEV-1 incident
-      title = case service.slug.to_s
+      title = triage_info["incident_title"].presence || case service.slug.to_s
               when /duo/
                 "Alert Storm: Duo Auth Gateway Redis Connection Saturation & MFA Failures"
               when /webex/
@@ -94,59 +113,94 @@ module Aiops
                 "Alert Storm: #{service.name} High-Volume Telemetry Cascade"
               end
 
-      error_sig = "AIOps Storm Ingestion: Cascading telemetry burst detected across 5 monitoring layers. Root cause isolation active."
+      error_sig = case service.slug.to_s
+                  when /duo/
+                    <<~TRACE.strip
+                      Redis::CannotConnectError: Connection pool exhausted (max 500 connections reached).
+                      at /app/vendor/bundle/ruby/gems/redis-client-0.19.0/lib/redis_client/connection_pool.rb:64:in `checkout'
+                      at /app/services/auth/duo_token_verifier.rb:142:in `verify_mfa_session'
+                      Client pool timeout: 5000ms exceeded. Active clients: 500/500, Waiting threads: 142.
+                    TRACE
+                  when /webex/
+                    <<~TRACE.strip
+                      SDWAN-RTP-WARN: Jitter buffer overflow on edge interface ge0/0/2. Frankfurt-IXP latency = 384ms (SLA threshold: 120ms).
+                      Packet drop rate: 4.8% on UDP audio stream cohort 44-A. ThousandEyes BGP flap alert triggered.
+                    TRACE
+                  when /meraki/
+                    <<~TRACE.strip
+                      EnvoyTLSHandshakeError: Peer certificate verification failed (X509_V_ERR_CERT_HAS_EXPIRED).
+                      Remote cluster: meraki-dashboard-sync-europe.internal:8443.
+                      Failed connections: 3,410 handshakes terminated in last 60s across enterprise switches.
+                    TRACE
+                  when /appdynamics/
+                    <<~TRACE.strip
+                      Kafka::ConsumerLagSpike: Partition 14 lag exceeded 1,200,000 messages.
+                      Memory pressure on worker pods: 98.4% RSS. Worker thread starvation on cisco-appd-ingest-03.
+                    TRACE
+                  when /licensing/
+                    <<~TRACE.strip
+                      SmartLicensing::TokenTimeout: HMAC verification token pipeline timeout (>4500ms).
+                      TLS handshake backpressure on vault-auth-gateway-internal:8200. 1,840 pending licensing requests queued.
+                    TRACE
+                  else
+                    "AIOps Storm Ingestion: Cascading telemetry burst detected across 5 monitoring layers for #{service.name}. Root cause isolation active."
+                  end
 
       new_incident = service.incidents.create!(
         title: title,
-        severity: "SEV-1",
+        severity: triage_info["severity"].presence || "SEV-1",
         status: "triggered",
         error_signature: error_sig,
-        assigned_to: service.on_call_engineer.presence || "Alex Rivera (Principal SRE)"
+        assigned_to: "Unassigned (Waiting for Engineer)"
       )
 
       service.update!(status: "outage")
 
       new_incident.incident_events.create!(
-        actor: "PulseGuard AIOps Engine",
+        actor: "PulseGuard AI Service Detector",
         action_type: "triggered",
-        detail: "Automated incident opened from correlated alert storm burst on #{service.name}."
+        detail: "🔍 AI arızanın '#{service.name}' servisinde olduğunu tespit etti ve olayı kuyruğa ekledi: #{triage_info['detection_reasoning']}"
       )
 
-      # Synthesize AI pass
+      # Synthesize AI pass (error interpretation, engineer guidance, solution & notification)
       pass = Ai::IncidentPassGeneratorService.call(new_incident)
+      pass["service_detection_reasoning"] = triage_info["detection_reasoning"]
+      pass["detected_service_name"] = service.name
+      pass["log_triage_mode"] = triage_info["mode"]
       new_incident.update!(ai_triage_pass: pass)
+
+      new_incident.incident_events.create!(
+        actor: "PulseGuard AI Triage (#{pass['mode'] == 'live_gemini' ? 'Live Gemini' : 'AI Engine'})",
+        action_type: "ai_analyzed",
+        detail: "🤖 AI hatayı yorumladı, çözüm komutunu hazırladı ve nöbetçi mühendise (#{pass['recommended_assignee']}) bildirim gönderdi."
+      )
 
       new_incident
     end
 
-    def generate_alert_burst(service, incident)
+    def prepare_alert_templates(service)
       ts = Time.current.to_i
       slug = service.slug
       name = service.name
 
       templates = build_templates(slug, name, ts)
 
-      # Adjust templates to match @burst_size exactly
-      selected_templates = if @burst_size <= templates.size
-                             templates.first(@burst_size)
-                           else
-                             extra_count = @burst_size - templates.size
-                             extras = (1..extra_count).map do |i|
-                               src = Alert::SOURCES[i % Alert::SOURCES.size]
-                               {
-                                 source: src,
-                                 severity: i % 3 == 0 ? "warning" : "info",
-                                 status: "suppressed_noise",
-                                 fingerprint: "#{slug}:k8s:synthetic_cascade_probe_#{ts}_#{i}_#{SecureRandom.hex(3)}",
-                                 message: "Kubernetes Event: Diagnostic synthetic probe container exited with code 0 on node worker-#{i}.",
-                                 metadata: { worker_index: i, auto_suppressed: true }
-                               }
-                             end
-                             templates + extras
-                           end
-
-      selected_templates.map do |attrs|
-        Alert.create!(attrs.merge(service: service, incident: incident))
+      if @burst_size <= templates.size
+        templates.first(@burst_size)
+      else
+        extra_count = @burst_size - templates.size
+        extras = (1..extra_count).map do |i|
+          src = Alert::SOURCES[i % Alert::SOURCES.size]
+          {
+            source: src,
+            severity: i % 3 == 0 ? "warning" : "info",
+            status: "suppressed_noise",
+            fingerprint: "#{slug}:k8s:synthetic_cascade_probe_#{ts}_#{i}_#{SecureRandom.hex(3)}",
+            message: "Kubernetes Event: Diagnostic synthetic probe container exited with code 0 on node worker-#{i}.",
+            metadata: { worker_index: i, auto_suppressed: true }
+          }
+        end
+        templates + extras
       end
     end
 

@@ -74,30 +74,31 @@ module Ai
 
       prompt = <<~PROMPT
         You are the Cisco Cloud Communications Operations Director for the public status page (status.cisco.com).
-        Draft a clear, empathetic, non-technical, customer-facing status broadcast update for an active incident.
+        Draft a clear, empathetic, non-technical, customer-facing status broadcast update in TURKISH for an active incident.
 
         Incident Context:
         - Incident Title: #{@incident.title}
         - Service: #{service_name} (Tier: #{@incident.service&.tier || 'Tier-1'})
         - Severity: #{@incident.severity}
         - Current Incident State: #{@incident.status}
+        - Assigned Engineer Handling Case: #{@incident.assigned_to}
         - Target Broadcast Status Type: #{st_type}
         - Communication Tone: #{@tone}
         - Technical Summary (FOR CONTEXT ONLY - DO NOT EXPOSE RAW DETAILS TO CUSTOMERS):
         #{@incident.error_signature.presence || @incident.title}
 
         Guidelines:
-        1. Write for non-technical enterprise IT administrators and end users.
+        1. Write in clear, natural, professional TURKISH for non-technical enterprise customers and IT admins.
         2. Never expose raw stacktraces, database connection strings, internal IP addresses, passwords, or internal hostnames.
         3. Be empathetic, transparent, reassuring, and professional.
-        4. State clearly what is happening, what engineers are doing, and current impact.
-        5. The "title" should be a concise headline (under 80 characters).
-        6. The "body" should be 2 to 3 sentences in clear paragraphs.
+        4. State clearly what is happening on #{service_name}, that our engineering team has taken ownership of the case, and what mitigation is underway.
+        5. The "title" should be a concise Turkish headline (under 85 characters).
+        6. The "body" should be 2 to 3 sentences in clear Turkish.
 
         Return a single STRICT JSON object with EXACTLY these keys:
         {
-          "title": "Concise non-technical headline",
-          "body": "Empathetic, clear, 2-3 sentence customer-facing explanation",
+          "title": "Kısa ve net Türkçe durum başlığı",
+          "body": "Müşteriler için anlaşılır, güven verici 2-3 cümlelik Türkçe durum açıklaması",
           "status_type": "#{st_type}"
         }
       PROMPT

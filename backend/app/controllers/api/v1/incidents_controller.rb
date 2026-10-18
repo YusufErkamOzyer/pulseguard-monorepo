@@ -121,19 +121,21 @@ module Api
 
       def generate_postmortem
         pm = @incident.postmortem || @incident.build_postmortem
-        pass = @incident.ai_triage_pass || {}
 
-        summary = params[:summary].presence || pm.summary.presence ||
-                  "Postmortem for #{@incident.title}. Root cause resolved via PulseGuard runbook execution."
-        root_cause = params[:root_cause].presence || pm.root_cause.presence ||
-                     pass["root_cause_hypothesis"] || "Root cause identified through signature analysis."
-        impact_metrics = params[:impact_metrics].presence || pm.impact_metrics.presence ||
-                         "MTTR saved: #{pass['estimated_time_saved_minutes'] || 18}m. 0 enterprise customer sessions lost."
-        action_items = params[:action_items].presence || pm.action_items.presence || [
-          { "task" => "Audit connection limits and TLS bundles in #{@incident.service.name}", "completed" => true },
-          { "task" => "Add automated fallback runbook to Cisco Catalyst Center alert pipeline", "completed" => true }
-        ]
-        published = params[:published].nil? ? true : params[:published]
+        if ActiveModel::Type::Boolean.new.cast(params[:resynthesize]) || (params[:summary].blank? && pm.summary.blank?)
+          ai_pm = Ai::PostmortemGeneratorService.call(@incident)
+          summary = params[:summary].presence || ai_pm["summary"]
+          root_cause = params[:root_cause].presence || ai_pm["root_cause"]
+          impact_metrics = params[:impact_metrics].presence || ai_pm["impact_metrics"]
+          action_items = params[:action_items].presence || ai_pm["action_items"]
+        else
+          summary = params[:summary].presence || pm.summary
+          root_cause = params[:root_cause].presence || pm.root_cause
+          impact_metrics = params[:impact_metrics].presence || pm.impact_metrics
+          action_items = params[:action_items].presence || pm.action_items
+        end
+
+        published = params[:published].nil? ? true : ActiveModel::Type::Boolean.new.cast(params[:published])
 
         pm.update!(
           summary: summary,

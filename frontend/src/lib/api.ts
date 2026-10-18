@@ -57,6 +57,14 @@ export interface PostmortemRecord {
 
 export interface AiTriagePass {
   root_cause_hypothesis: string;
+  engineer_guidance?: string[];
+  engineer_notification?: string;
+  service_detection_reasoning?: string;
+  detected_service_name?: string;
+  log_triage_mode?: string;
+  postmortem_mode?: string;
+  postmortem_model?: string;
+  customer_broadcast_draft?: StakeholderBroadcastDraft;
   confidence_score: number;
   matched_historical_incident: string;
   suggested_runbook_command: string;
@@ -65,6 +73,7 @@ export interface AiTriagePass {
   estimated_time_saved_minutes: number;
   one_click_ready: boolean;
   mode?: "live_gemini" | "deterministic_fallback" | string;
+  model?: string;
   generated_at?: string;
 }
 
@@ -173,6 +182,10 @@ export interface StormSummary {
   grouped_count: number;
   noise_reduction_ratio: number;
   noise_reduction_percentage: number;
+  detected_service_name?: string;
+  detected_service_slug?: string;
+  detection_reasoning?: string;
+  ai_mode?: string;
 }
 
 export interface SimulateStormResponse {
@@ -591,6 +604,7 @@ export async function simulateAlertStorm(
     service_id?: number;
     incident_id?: number;
     burst_size?: number;
+    create_fresh?: boolean;
   }
 ): Promise<ApiResponse<SimulateStormResponse>> {
   const start = performance.now();

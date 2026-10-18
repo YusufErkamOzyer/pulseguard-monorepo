@@ -122,12 +122,14 @@ module Api
         service_slug = params[:service_slug].presence
         service_id = params[:service_id].presence
         burst_size = params[:burst_size].present? ? params[:burst_size].to_i : 30
+        create_fresh = ActiveModel::Type::Boolean.new.cast(params[:create_fresh])
 
         result = Aiops::AlertStormSimulatorService.call(
           service_slug: service_slug,
           service_id: service_id,
           incident_id: params[:incident_id],
-          burst_size: burst_size
+          burst_size: burst_size,
+          create_fresh: create_fresh
         )
 
         render json: {
@@ -179,6 +181,16 @@ module Api
             escalation_policy: incident.service.escalation_policy
           } : nil,
           ai_triage_pass: incident.ai_triage_pass,
+          postmortem: incident.postmortem ? {
+            id: incident.postmortem.id,
+            summary: incident.postmortem.summary,
+            root_cause: incident.postmortem.root_cause,
+            impact_metrics: incident.postmortem.impact_metrics,
+            action_items: incident.postmortem.action_items,
+            published: incident.postmortem.published,
+            created_at: incident.postmortem.created_at,
+            updated_at: incident.postmortem.updated_at
+          } : nil,
           events: incident.incident_events.map do |event|
             {
               id: event.id,
